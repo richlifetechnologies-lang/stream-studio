@@ -1,4 +1,5 @@
 import { Router, Route, Switch } from "wouter";
+import { useHashLocation } from "wouter/use-hash-location";
 import { useState, useEffect } from "react";
 import StreamPage from "./pages/stream";
 import SettingsPage from "./pages/settings";
@@ -51,7 +52,6 @@ function UpdateBanner() {
       borderBottom: `1px solid ${C}44`,
       boxShadow: `0 0 24px hsl(187 100% 52% / 0.12)`,
     }}>
-      {/* Left: icon + message */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{
           width: 28, height: 28, borderRadius: 8,
@@ -73,7 +73,6 @@ function UpdateBanner() {
         </div>
       </div>
 
-      {/* Right: actions */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
         <button
           onClick={() => window.electronAPI?.openExternal(update.downloadUrl)}
@@ -122,7 +121,7 @@ function UpdateBanner() {
 
 export default function App() {
   return (
-    <Router>
+    <Router hook={useHashLocation}>
       <Toaster />
       <UpdateBanner />
       <Switch>
