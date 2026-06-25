@@ -22,7 +22,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
 
       - name: Install dependencies
         run: npm install
@@ -52,7 +51,7 @@ jobs:
 
             ### Installation
             1. Download `StreamStudio-Setup-*.exe` below
-            2. Run the installer — it installs per-user, no admin required
+            2. Run the installer — choose your install location
             3. Launch **Stream Studio** from your desktop or Start Menu
             4. Enter your [Decart API key](https://app.decart.ai) and start streaming
 
@@ -63,6 +62,7 @@ jobs:
             - OBS mode with clean output window
             - Fullscreen & popout support
             - Reference image upload
+            - Premium branded installer with custom graphics
           files: release/*.exe
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
