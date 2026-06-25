@@ -39,9 +39,9 @@ export default function SettingsPage() {
   };
 
   const handleClear = () => {
-    if (!confirm("This will remove your API Key and Secret Key and return you to setup. Continue?")) return;
+    if (!confirm("This will remove your API Key and Secret Key from this device. Continue?")) return;
     clearCredentials();
-    setLocation("/setup");
+    setLocation("/");
   };
 
   const inputStyle: React.CSSProperties = {
@@ -170,7 +170,7 @@ export default function SettingsPage() {
             <p style={{ fontWeight: 700, fontSize: 14, color: "hsl(0 85% 75%)", fontFamily: "'Rajdhani', sans-serif" }}>Danger Zone</p>
           </div>
           <p style={{ fontSize: 13, color: "hsl(0 50% 60%)", marginBottom: 14, fontFamily: "'Rajdhani', sans-serif", lineHeight: 1.5 }}>
-            Remove your API Key and Secret Key from this device. You will be taken back to the setup screen.
+            Remove your API Key and Secret Key from this device. You will need to re-enter them in Settings to start streaming.
           </p>
           <button
             onClick={handleClear}
