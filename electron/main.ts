@@ -1,7 +1,53 @@
-import { app, BrowserWindow, shell, session } from "electron";
+import { app, BrowserWindow, shell, session, ipcMain } from "electron";
 import path from "path";
+import https from "https";
 
 const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+
+function isNewer(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
+    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
+  }
+  return false;
+}
+
+function checkForUpdates(win: BrowserWindow) {
+  const currentVersion = app.getVersion();
+  const req = https.get(
+    {
+      hostname: "api.github.com",
+      path: "/repos/richlifetechnologies-lang/stream-studio/releases/latest",
+      headers: { "User-Agent": `StreamStudio/${currentVersion}` },
+    },
+    (res) => {
+      let data = "";
+      res.on("data", (chunk: Buffer) => { data += chunk; });
+      res.on("end", () => {
+        try {
+          const release = JSON.parse(data);
+          const latestTag = (release.tag_name ?? "").replace(/^v/, "");
+          if (latestTag && isNewer(latestTag, currentVersion)) {
+            const exeAsset = (release.assets ?? []).find((a: { name: string }) =>
+              a.name.endsWith(".exe")
+            );
+            win.webContents.send("update-available", {
+              version: latestTag,
+              downloadUrl: (exeAsset as { browser_download_url?: string } | undefined)?.browser_download_url ?? release.html_url,
+              releaseUrl: release.html_url,
+            });
+          }
+        } catch {
+          // Ignore JSON parse errors
+        }
+      });
+    }
+  );
+  req.on("error", () => { /* Ignore network errors — update check is best-effort */ });
+  req.end();
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -40,6 +86,13 @@ function createWindow() {
     win.loadFile(path.join(__dirname, "../dist/index.html"));
   }
 
+  // Check for updates 5 seconds after the app loads (production only)
+  win.webContents.once("did-finish-load", () => {
+    if (!isDev) {
+      setTimeout(() => checkForUpdates(win), 5000);
+    }
+  });
+
   // Open external links in the default browser, not Electron
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http")) {
@@ -55,6 +108,11 @@ function createWindow() {
     }
   });
 }
+
+// IPC: open external URL (used by renderer for update download link)
+ipcMain.on("open-external", (_event, url: string) => {
+  shell.openExternal(url);
+});
 
 app.whenReady().then(() => {
   createWindow();
