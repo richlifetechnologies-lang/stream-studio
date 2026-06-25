@@ -1,56 +1,47 @@
 import { app, BrowserWindow, shell, session, ipcMain } from "electron";
+import { autoUpdater } from "electron-updater";
 import path from "path";
-import https from "https";
 
 const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
 
-function isNewer(a: string, b: string): boolean {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if ((pa[i] ?? 0) > (pb[i] ?? 0)) return true;
-    if ((pa[i] ?? 0) < (pb[i] ?? 0)) return false;
-  }
-  return false;
-}
+let mainWindow: BrowserWindow | null = null;
 
-function checkForUpdates(win: BrowserWindow) {
-  const currentVersion = app.getVersion();
-  const req = https.get(
-    {
-      hostname: "api.github.com",
-      path: "/repos/richlifetechnologies-lang/stream-studio/releases/latest",
-      headers: { "User-Agent": `StreamStudio/${currentVersion}` },
-    },
-    (res) => {
-      let data = "";
-      res.on("data", (chunk: Buffer) => { data += chunk; });
-      res.on("end", () => {
-        try {
-          const release = JSON.parse(data);
-          const latestTag = (release.tag_name ?? "").replace(/^v/, "");
-          if (latestTag && isNewer(latestTag, currentVersion)) {
-            const exeAsset = (release.assets ?? []).find((a: { name: string }) =>
-              a.name.endsWith(".exe")
-            );
-            win.webContents.send("update-available", {
-              version: latestTag,
-              downloadUrl: (exeAsset as { browser_download_url?: string } | undefined)?.browser_download_url ?? release.html_url,
-              releaseUrl: release.html_url,
-            });
-          }
-        } catch {
-          // Ignore JSON parse errors
-        }
-      });
+function setupAutoUpdater(win: BrowserWindow) {
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("update-available", (info) => {
+    win.webContents.send("update-available", { version: info.version });
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    win.webContents.send("download-progress", {
+      percent: Math.round(progress.percent),
+      transferred: progress.transferred,
+      total: progress.total,
+    });
+  });
+
+  autoUpdater.on("update-downloaded", () => {
+    win.webContents.send("update-downloaded");
+  });
+
+  autoUpdater.on("error", () => {
+    // Silently ignore update errors — update check is best-effort
+  });
+
+  // Check 5 s after window loads
+  win.webContents.once("did-finish-load", () => {
+    if (!isDev) {
+      setTimeout(() => {
+        autoUpdater.checkForUpdates().catch(() => {});
+      }, 5000);
     }
-  );
-  req.on("error", () => { /* Ignore network errors — update check is best-effort */ });
-  req.end();
+  });
 }
 
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1024,
@@ -67,7 +58,6 @@ function createWindow() {
     },
   });
 
-  // Set permissive CSP for Decart / LiveKit WebRTC
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -80,21 +70,15 @@ function createWindow() {
   });
 
   if (isDev) {
-    win.loadURL("http://localhost:5173");
-    win.webContents.openDevTools();
+    mainWindow.loadURL("http://localhost:5173");
+    mainWindow.webContents.openDevTools();
   } else {
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
   }
 
-  // Check for updates 5 seconds after the app loads (production only)
-  win.webContents.once("did-finish-load", () => {
-    if (!isDev) {
-      setTimeout(() => checkForUpdates(win), 5000);
-    }
-  });
+  setupAutoUpdater(mainWindow);
 
-  // Open external links in the default browser, not Electron
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http")) {
       shell.openExternal(url);
       return { action: "deny" };
@@ -102,21 +86,25 @@ function createWindow() {
     return { action: "allow" };
   });
 
-  win.webContents.on("did-fail-load", () => {
-    if (!isDev) {
-      win.loadFile(path.join(__dirname, "../dist/index.html"));
+  mainWindow.webContents.on("did-fail-load", () => {
+    if (!isDev && mainWindow) {
+      mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
     }
   });
 }
 
-// IPC: open external URL (used by renderer for update download link)
-ipcMain.on("open-external", (_event, url: string) => {
-  shell.openExternal(url);
+// IPC: trigger update download
+ipcMain.on("download-update", () => {
+  autoUpdater.downloadUpdate().catch(() => {});
+});
+
+// IPC: quit and install the downloaded update
+ipcMain.on("quit-and-install", () => {
+  autoUpdater.quitAndInstall();
 });
 
 app.whenReady().then(() => {
   createWindow();
-
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
