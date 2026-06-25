@@ -1,154 +1,191 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { AppLayout } from "../components/layout";
-import { Settings, Key, Trash2, Eye, EyeOff, Save, LogOut } from "lucide-react";
-import { getApiKey, setApiKey, clearCredentials } from "../lib/credentials";
+import { Key, Shield, Trash2, Eye, EyeOff, Save, LogOut, CheckCircle2 } from "lucide-react";
+import { getApiKey, getSecretKey, setApiKey, setSecretKey, clearCredentials } from "../lib/credentials";
 import { useToast } from "../hooks/use-toast";
+
+const C = "hsl(187 100% 52%)";
+const BG = "hsl(222 47% 4%)";
 
 export default function SettingsPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const [newKey, setNewKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
 
-  const currentKey = getApiKey() ?? "";
-  const maskedKey = currentKey ? currentKey.slice(0, 8) + "••••••••••••" + currentKey.slice(-4) : "Not set";
+  const [newApiKey, setNewApiKey] = useState("");
+  const [newSecretKey, setNewSecretKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [showSecretKey, setShowSecretKey] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const currentApiKey = getApiKey() ?? "";
+  const currentSecretKey = getSecretKey() ?? "";
+  const maskedApi = currentApiKey ? currentApiKey.slice(0, 6) + "••••••••" + currentApiKey.slice(-4) : "Not set";
+  const maskedSecret = currentSecretKey ? currentSecretKey.slice(0, 6) + "••••••••" + currentSecretKey.slice(-4) : "Not set";
 
   const handleUpdate = () => {
-    const trimmed = newKey.trim();
-    if (!trimmed || trimmed.length < 10) {
-      toast({ title: "Invalid key", description: "Please enter a valid API key.", variant: "destructive" });
+    const ak = newApiKey.trim();
+    const sk = newSecretKey.trim();
+    if (!ak && !sk) {
+      toast({ title: "Nothing to update", description: "Enter a new API Key or Secret Key to update.", variant: "destructive" });
       return;
     }
-    setApiKey(trimmed);
-    setNewKey("");
-    toast({ title: "API key updated", description: "Your Decart API key has been saved." });
+    if (ak) { if (ak.length < 8) { toast({ title: "API Key too short", variant: "destructive" }); return; } setApiKey(ak); }
+    if (sk) { if (sk.length < 8) { toast({ title: "Secret Key too short", variant: "destructive" }); return; } setSecretKey(sk); }
+    setNewApiKey(""); setNewSecretKey("");
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2500);
+    toast({ title: "Credentials updated", description: "Your keys have been saved to this device." });
   };
 
   const handleClear = () => {
-    if (!confirm("This will remove your API key and return you to setup. Continue?")) return;
+    if (!confirm("This will remove your API Key and Secret Key and return you to setup. Continue?")) return;
     clearCredentials();
     setLocation("/setup");
   };
 
+  const inputStyle: React.CSSProperties = {
+    width: "100%", padding: "10px 40px 10px 40px",
+    background: BG, border: "1px solid hsl(222 40% 14%)",
+    borderRadius: 8, color: "hsl(190 80% 96%)",
+    fontSize: 14, fontFamily: "'Rajdhani', sans-serif", outline: "none",
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: "block", fontSize: 10, fontWeight: 700,
+    color: "hsl(222 25% 50%)", textTransform: "uppercase",
+    letterSpacing: "0.12em", fontFamily: "'Orbitron', monospace", marginBottom: 8,
+  };
+
   return (
     <AppLayout>
-      <div style={{ padding: 32, maxWidth: 600 }}>
+      <div style={{ padding: 32, maxWidth: 620 }}>
         <div style={{ marginBottom: 28 }}>
-          <h1 style={{
-            fontFamily: "'Orbitron', monospace", fontWeight: 700,
-            fontSize: 22, letterSpacing: "0.06em", color: "hsl(190 80% 96%)",
-            marginBottom: 4,
-          }}>
-            Settings
+          <h1 style={{ fontFamily: "'Orbitron', monospace", fontWeight: 700, fontSize: 20, letterSpacing: "0.06em", color: "hsl(190 80% 96%)", marginBottom: 4 }}>
+            Account Settings
           </h1>
-          <p style={{ color: "hsl(222 25% 55%)", fontSize: 14, fontFamily: "'Rajdhani', sans-serif" }}>
-            Manage your Decart API credentials
+          <p style={{ color: "hsl(222 25% 50%)", fontSize: 14, fontFamily: "'Rajdhani', sans-serif" }}>
+            Manage your API Key and Secret Key stored on this device
           </p>
         </div>
 
-        {/* Current key */}
-        <div style={{
-          background: "hsl(222 44% 6%)",
-          border: "1px solid hsl(222 40% 11%)",
-          borderRadius: 14, padding: 20, marginBottom: 16,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-            <div style={{
-              width: 34, height: 34, borderRadius: 8,
-              background: "hsl(187 100% 52% / 0.1)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <Key style={{ width: 16, height: 16, color: "hsl(187 100% 52%)" }} />
+        {/* Current keys display */}
+        <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 20, marginBottom: 14 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron', monospace", marginBottom: 14 }}>
+            Current Credentials
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "hsl(222 40% 8%)", borderRadius: 8, border: "1px solid hsl(222 40% 12%)" }}>
+              <Key style={{ width: 14, height: 14, color: C, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: 10, color: "hsl(222 25% 45%)", fontFamily: "'Orbitron', monospace", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>API Key</p>
+                <p style={{ fontSize: 13, color: "hsl(190 80% 90%)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{maskedApi}</p>
+              </div>
             </div>
-            <div>
-              <p style={{ fontWeight: 700, fontSize: 14, color: "hsl(190 80% 96%)", fontFamily: "'Rajdhani', sans-serif" }}>Current API Key</p>
-              <p style={{ fontSize: 12, color: "hsl(222 25% 50%)", fontFamily: "monospace" }}>{maskedKey}</p>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "hsl(222 40% 8%)", borderRadius: 8, border: "1px solid hsl(222 40% 12%)" }}>
+              <Shield style={{ width: 14, height: 14, color: C, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: 10, color: "hsl(222 25% 45%)", fontFamily: "'Orbitron', monospace", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>Secret Key</p>
+                <p style={{ fontSize: 13, color: "hsl(190 80% 90%)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{maskedSecret}</p>
+              </div>
             </div>
           </div>
+        </div>
 
-          <label style={{
-            display: "block", marginBottom: 8,
-            fontSize: 11, fontWeight: 700, letterSpacing: "0.1em",
-            color: "hsl(187 100% 52%)", textTransform: "uppercase",
-            fontFamily: "'Orbitron', monospace",
-          }}>
-            New API Key
-          </label>
-          <div style={{ position: "relative", marginBottom: 14 }}>
-            <input
-              type={showKey ? "text" : "password"}
-              value={newKey}
-              onChange={e => setNewKey(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleUpdate()}
-              placeholder="Enter new Decart API key…"
-              style={{
-                width: "100%", padding: "10px 40px 10px 12px",
-                background: "hsl(222 47% 4%)",
-                border: "1px solid hsl(222 40% 14%)",
-                borderRadius: 8, color: "hsl(190 80% 96%)",
-                fontSize: 14, fontFamily: "'Rajdhani', sans-serif", outline: "none",
-              }}
-              onFocus={e => { e.target.style.borderColor = "hsl(187 100% 52% / 0.5)"; }}
-              onBlur={e => { e.target.style.borderColor = "hsl(222 40% 14%)"; }}
-            />
+        {/* Update keys */}
+        <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 20, marginBottom: 14 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron', monospace", marginBottom: 16 }}>
+            Update Credentials
+          </p>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* New API Key */}
+            <div>
+              <label style={labelStyle}>New API Key</label>
+              <div style={{ position: "relative" }}>
+                <Key style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "hsl(222 25% 40%)" }} />
+                <input
+                  type={showApiKey ? "text" : "password"}
+                  value={newApiKey}
+                  onChange={e => setNewApiKey(e.target.value)}
+                  placeholder="Enter new API Key"
+                  style={inputStyle}
+                  onFocus={e => { e.target.style.borderColor = "hsl(187 100% 52% / 0.5)"; e.target.style.boxShadow = "0 0 0 2px hsl(187 100% 52% / 0.1)"; }}
+                  onBlur={e => { e.target.style.borderColor = "hsl(222 40% 14%)"; e.target.style.boxShadow = "none"; }}
+                />
+                <button type="button" onClick={() => setShowApiKey(v => !v)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "hsl(222 25% 45%)", padding: 4 }}>
+                  {showApiKey ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
+                </button>
+              </div>
+            </div>
+
+            {/* New Secret Key */}
+            <div>
+              <label style={labelStyle}>New Secret Key</label>
+              <div style={{ position: "relative" }}>
+                <Shield style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "hsl(222 25% 40%)" }} />
+                <input
+                  type={showSecretKey ? "text" : "password"}
+                  value={newSecretKey}
+                  onChange={e => setNewSecretKey(e.target.value)}
+                  placeholder="Enter new Secret Key"
+                  style={inputStyle}
+                  onFocus={e => { e.target.style.borderColor = "hsl(187 100% 52% / 0.5)"; e.target.style.boxShadow = "0 0 0 2px hsl(187 100% 52% / 0.1)"; }}
+                  onBlur={e => { e.target.style.borderColor = "hsl(222 40% 14%)"; e.target.style.boxShadow = "none"; }}
+                />
+                <button type="button" onClick={() => setShowSecretKey(v => !v)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "hsl(222 25% 45%)", padding: 4 }}>
+                  {showSecretKey ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
+                </button>
+              </div>
+            </div>
+
+            <p style={{ fontSize: 11, color: "hsl(222 25% 40%)", fontFamily: "'Rajdhani', sans-serif" }}>
+              Leave a field blank to keep its current value unchanged.
+            </p>
+
             <button
-              type="button"
-              onClick={() => setShowKey(v => !v)}
-              style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "hsl(222 25% 50%)" }}
+              onClick={handleUpdate}
+              disabled={!newApiKey.trim() && !newSecretKey.trim()}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "10px 18px", borderRadius: 8, width: "fit-content",
+                background: (!newApiKey.trim() && !newSecretKey.trim()) ? "hsl(222 40% 11%)" : saved ? "hsl(143 72% 35%)" : C,
+                border: "none",
+                cursor: (!newApiKey.trim() && !newSecretKey.trim()) ? "not-allowed" : "pointer",
+                color: (!newApiKey.trim() && !newSecretKey.trim()) ? "hsl(222 25% 35%)" : "hsl(222 47% 4%)",
+                fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani', sans-serif",
+                transition: "all 0.2s",
+              }}
             >
-              {showKey ? <EyeOff style={{ width: 15, height: 15 }} /> : <Eye style={{ width: 15, height: 15 }} />}
+              {saved ? <CheckCircle2 style={{ width: 14, height: 14 }} /> : <Save style={{ width: 14, height: 14 }} />}
+              {saved ? "Saved!" : "Update Keys"}
             </button>
           </div>
-
-          <button
-            onClick={handleUpdate}
-            disabled={!newKey.trim()}
-            style={{
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "9px 18px", borderRadius: 8,
-              background: newKey.trim() ? "hsl(187 100% 52%)" : "hsl(222 40% 11%)",
-              border: "none", cursor: newKey.trim() ? "pointer" : "not-allowed",
-              color: newKey.trim() ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)",
-              fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani', sans-serif",
-              transition: "all 0.2s",
-            }}
-          >
-            <Save style={{ width: 14, height: 14 }} />
-            Update Key
-          </button>
         </div>
 
         {/* Danger zone */}
-        <div style={{
-          background: "hsl(0 60% 7%)",
-          border: "1px solid hsl(0 85% 40% / 0.25)",
-          borderRadius: 14, padding: 20,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-            <Trash2 style={{ width: 16, height: 16, color: "hsl(0 85% 65%)" }} />
+        <div style={{ background: "hsl(0 60% 7%)", border: "1px solid hsl(0 85% 40% / 0.25)", borderRadius: 14, padding: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <Trash2 style={{ width: 15, height: 15, color: "hsl(0 85% 65%)" }} />
             <p style={{ fontWeight: 700, fontSize: 14, color: "hsl(0 85% 75%)", fontFamily: "'Rajdhani', sans-serif" }}>Danger Zone</p>
           </div>
-          <p style={{ fontSize: 13, color: "hsl(0 50% 60%)", marginBottom: 14, fontFamily: "'Rajdhani', sans-serif" }}>
-            Remove your API key from this device. You'll be taken back to the setup screen.
+          <p style={{ fontSize: 13, color: "hsl(0 50% 60%)", marginBottom: 14, fontFamily: "'Rajdhani', sans-serif", lineHeight: 1.5 }}>
+            Remove your API Key and Secret Key from this device. You will be taken back to the setup screen.
           </p>
           <button
             onClick={handleClear}
             style={{
               display: "flex", alignItems: "center", gap: 6,
-              padding: "9px 18px", borderRadius: 8,
-              background: "hsl(0 85% 40% / 0.2)",
-              border: "1px solid hsl(0 85% 40% / 0.4)",
-              cursor: "pointer",
-              color: "hsl(0 85% 70%)",
-              fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani', sans-serif",
-              transition: "all 0.2s",
+              padding: "9px 16px", borderRadius: 8,
+              background: "hsl(0 85% 40% / 0.2)", border: "1px solid hsl(0 85% 40% / 0.4)",
+              cursor: "pointer", color: "hsl(0 85% 70%)",
+              fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani', sans-serif", transition: "all 0.2s",
             }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.35)"; }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.2)"; }}
           >
-            <LogOut style={{ width: 14, height: 14 }} />
-            Remove Key &amp; Log Out
+            <LogOut style={{ width: 13, height: 13 }} />
+            Remove Keys &amp; Log Out
           </button>
         </div>
       </div>
