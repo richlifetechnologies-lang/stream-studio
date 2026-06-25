@@ -307,7 +307,7 @@ export default function StreamPage() {
       // Combine camera + (optionally) mic
       let combined = localStreamRef.current;
       if (audioStream) {
-        const track = audioStream.getAudioTracks()[0];
+        const track = audioStream.stream.getAudioTracks()[0];
         if (track) combined = new MediaStream([...localStreamRef.current.getVideoTracks(), track]);
         setAudioActive(true);
       }
