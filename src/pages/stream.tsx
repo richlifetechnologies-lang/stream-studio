@@ -279,7 +279,7 @@ export default function StreamPage() {
   const handleStartStream = useCallback(async () => {
     if (isStartingRef.current || isStreaming) return;
     if (credsMissing) {
-      toast({ title: "Keys not set", description: "Add your API Key and Secret Key in Settings first.", variant: "destructive" });
+      setLocation("/settings");
       return;
     }
     if (!cameraReady || !localStreamRef.current) {
@@ -571,10 +571,10 @@ export default function StreamPage() {
                 <Square style={{ width: 18, height: 18 }} /> Stop Stream
               </button>
             ) : (
-              <button onClick={handleStartStream} disabled={isStarting || !cameraReady || credsMissing} style={{ width: "100%", height: 54, background: (!isStarting && cameraReady && !credsMissing) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (!isStarting && cameraReady && !credsMissing) ? "pointer" : "not-allowed", color: (!isStarting && cameraReady && !credsMissing) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (!isStarting && cameraReady && !credsMissing) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none", transition: "all 0.2s" }}
+              <button onClick={handleStartStream} disabled={isStarting || !cameraReady} style={{ width: "100%", height: 54, background: (!isStarting && cameraReady && !credsMissing) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (!isStarting && cameraReady && !credsMissing) ? "pointer" : "not-allowed", color: (!isStarting && cameraReady && !credsMissing) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (!isStarting && cameraReady && !credsMissing) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none", transition: "all 0.2s" }}
                 onMouseEnter={e => { if (!isStarting && cameraReady && !credsMissing) (e.currentTarget as HTMLElement).style.filter = "brightness(1.1)"; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.filter = "none"; }}>
                 {isStarting ? <><Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> Starting…</>
-                  : credsMissing ? <><Settings style={{ width: 18, height: 18 }} /> Set Keys in Settings First</>
+                  : credsMissing ? <><Settings style={{ width: 18, height: 18 }} /> Open Settings to Set Keys</>
                   : !cameraReady ? <><Camera style={{ width: 18, height: 18 }} /> Enable Camera First</>
                   : <><Play style={{ width: 18, height: 18 }} /> Stream Now</>}
               </button>
