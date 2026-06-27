@@ -12,12 +12,30 @@ let mainWindow: BrowserWindow | null = null;
 const GITHUB_OWNER = "richlifetechnologies-lang";
 const GITHUB_REPO  = "stream-studio";
 
-// ─── Asset pattern for the current platform ──────────────────────────────────
-function getAssetPattern(): RegExp {
-  if (process.platform === "win32")  return /StreamStudio-Setup-.*\.exe$/i;
-  if (process.platform === "darwin") return /StreamStudio-.*\.dmg$/i;
-  return /StreamStudio-.*\.AppImage$/i;
-}
+// ─── Asset pattern for the current platform + architecture ─────────────────
+  function getAssetPattern(): RegExp {
+    if (process.platform === "win32") return /StreamStudio-Setup-.*\.exe$/i;
+    if (process.platform === "darwin") {
+      // Separate arm64 and x64 DMGs — pick the one that matches this machine
+      const arch = process.arch === "arm64" ? "arm64" : "x64";
+      return new RegExp(`StreamStudio-.*-${arch}\\.dmgimport { app, BrowserWindow, shell, session, ipcMain } from "electron";
+import https from "https";
+import http from "http";
+import fs from "fs";
+import os from "os";
+import path from "path";
+
+const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+
+let mainWindow: BrowserWindow | null = null;
+
+const GITHUB_OWNER = "richlifetechnologies-lang";
+const GITHUB_REPO  = "stream-studio";
+
+, "i");
+    }
+    return /StreamStudio-.*\.AppImage$/i;
+  }
 
 // ─── Generic HTTPS GET with redirect following ────────────────────────────────
 function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Buffer> {
