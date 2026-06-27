@@ -179,6 +179,7 @@ export default function StreamPage() {
   const [isStarting, setIsStarting]    = useState(false);
   const [connectionStep, setConnectionStep] = useState<"auth"|"engine"|null>(null);
   const [elapsedSecs, setElapsedSecs]  = useState(0);
+  const [credits, setCredits]          = useState(0);
 
   const [cameras, setCameras]               = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState("");
@@ -249,10 +250,10 @@ export default function StreamPage() {
   }, [cameraReady, startCamera]);
 
   // ─── Teardown ─────────────────────────────────────────────────────────────
-  const teardownStream = useCallback(() => {
+  const teardownStream = useCallback(async () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     isStartingRef.current = false;
-    try { decartRef.current?.disconnect(); } catch { /* ignore */ }
+    try { await decartRef.current?.disconnect(); } catch { /* ignore */ }
     decartRef.current = null;
     syncEngineRef.current?.stop();
     syncEngineRef.current = null;
@@ -262,7 +263,7 @@ export default function StreamPage() {
       try { popoutRef.current.postMessage("stream-studio-clear", "*"); } catch { /* ignore */ }
     }
     setIsStreaming(false); setConnectionStatus("idle");
-    setConnectionStep(null); setElapsedSecs(0);
+    setConnectionStep(null); setElapsedSecs(0); setCredits(0);
     setAudioActive(false); setSyncDelay(1.2); setVuLevel(0);
   }, []);
 
@@ -315,7 +316,7 @@ export default function StreamPage() {
         },
         onConnectionChange: (state) => {
           if (state === "connected") setConnectionStatus("connected");
-          else if ((state === "disconnected" || state === "failed") && isStartingRef.current) {
+          else if (state === "disconnected" || state === "failed") {
             teardownStream();
             toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" });
           }
@@ -329,7 +330,11 @@ export default function StreamPage() {
       if (refImageB64) { try { await rt.setImage(refImageB64); } catch { /* non-fatal */ } }
 
       const t0 = Date.now();
-      timerRef.current = setInterval(() => setElapsedSecs(Math.floor((Date.now() - t0) / 1000)), 1000);
+      timerRef.current = setInterval(() => {
+        const s = Math.floor((Date.now() - t0) / 1000);
+        setElapsedSecs(s);
+        setCredits(s * 2);
+      }, 1000);
       setIsStreaming(true); setConnectionStatus("connected");
     } catch (err) {
       teardownStream();
@@ -376,11 +381,14 @@ export default function StreamPage() {
   useEffect(() => {
     const h = (e: MessageEvent) => {
       if (e.data === "stream-studio-stop") teardownStream();
-      else if (e.data === "stream-studio-reconnect" && !isStreaming && cameraReady) handleStartStream();
+      else if (e.data === "stream-studio-reconnect" && cameraReady) {
+        teardownStream();
+        setTimeout(() => handleStartStream(), 300);
+      }
     };
     window.addEventListener("message", h);
     return () => window.removeEventListener("message", h);
-  }, [teardownStream, isStreaming, cameraReady, handleStartStream]);
+  }, [teardownStream, cameraReady, handleStartStream]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -430,7 +438,7 @@ export default function StreamPage() {
                 return <div key={step} style={{ flex: 1, height: 4, borderRadius: 2, transition: "all 0.5s", background: i < idx ? C : i === idx ? "hsl(187 100% 52% / 0.45)" : "hsl(222 40% 14%)" }} />;
               })}
             </div>
-            <button onClick={() => { isStartingRef.current = false; setIsStarting(false); setConnectionStatus("idle"); setConnectionStep(null); }}
+            <button onClick={() => teardownStream()}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 20px", borderRadius: 8, width: "100%", justifyContent: "center", background: "transparent", border: "1px solid hsl(187 100% 52% / 0.25)", color: "hsl(187 100% 52% / 0.8)", fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani',sans-serif", cursor: "pointer" }}>
               <X style={{ width: 14, height: 14 }} /> Cancel
             </button>
@@ -446,10 +454,21 @@ export default function StreamPage() {
             <p style={{ fontSize: 13, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>Real-time AI video transformation</p>
           </div>
           {isStreaming && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderRadius: 10, background: "hsl(0 85% 55% / 0.1)", border: "1px solid hsl(0 85% 55% / 0.2)" }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "hsl(0 85% 65%)", animation: "pulse 2s ease-in-out infinite" }} />
-              <span style={{ color: "hsl(0 85% 70%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 13, letterSpacing: "0.06em" }}>{formatTime(elapsedSecs)}</span>
-              {connectionStatus === "connected" && <span style={{ fontSize: 11, color: "hsl(143 72% 55%)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 700 }}>● LIVE</span>}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              {/* Live timer */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderRadius: 10, background: "hsl(0 85% 55% / 0.1)", border: "1px solid hsl(0 85% 55% / 0.2)" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "hsl(0 85% 65%)", animation: "pulse 2s ease-in-out infinite" }} />
+                <span style={{ color: "hsl(0 85% 70%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 13, letterSpacing: "0.06em" }}>{formatTime(elapsedSecs)}</span>
+                {connectionStatus === "connected" && <span style={{ fontSize: 11, color: "hsl(143 72% 55%)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 700 }}>● LIVE</span>}
+              </div>
+              {/* Cost tracker */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderRadius: 10, background: "hsl(187 100% 52% / 0.07)", border: "1px solid hsl(187 100% 52% / 0.2)" }}>
+                <Zap style={{ width: 13, height: 13, color: C, flexShrink: 0 }} />
+                <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
+                  <span style={{ fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 12, letterSpacing: "0.06em", color: C }}>{credits.toLocaleString()} credits</span>
+                  <span style={{ fontSize: 10, color: "hsl(187 100% 52% / 0.65)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 600 }}>${(credits * 0.01).toFixed(2)} used · 2 cr/s</span>
+                </div>
+              </div>
             </div>
           )}
         </div>
