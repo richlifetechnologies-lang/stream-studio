@@ -39,30 +39,30 @@ jobs:
       - name: Package Windows installer (no auto-publish)
         run: npx electron-builder --win --x64 --publish never
 
-      - name: Generate latest.yml for auto-updater
+      - name: Generate latest.yml for auto-updater (v1.6.x users)
         shell: pwsh
         run: |
           $exePath = (Get-Item 'release\StreamStudio-Setup-*.exe').FullName
-          $exeName = (Get-Item 'release\StreamStudio-Setup-*.exe').Name
+          $exeName = [System.IO.Path]::GetFileName($exePath)
           $bytes   = [System.IO.File]::ReadAllBytes($exePath)
-          $sha512  = [Convert]::ToBase64String(
-            [System.Security.Cryptography.SHA512]::Create().ComputeHash($bytes)
-          )
+          $hash    = [System.Security.Cryptography.SHA512]::Create().ComputeHash($bytes)
+          $sha512  = [Convert]::ToBase64String($hash)
           $size    = (Get-Item $exePath).Length
-          $ver     = '${{ inputs.release_tag || github.ref_name }}'.TrimStart('v')
+          $refName = '${{ inputs.release_tag || github.ref_name }}'
+          $ver     = $refName.TrimStart('v')
           $date    = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
-          $yaml = @"
-version: $ver
-files:
-  - url: $exeName
-    sha512: $sha512
-    size: $size
-path: $exeName
-sha512: $sha512
-releaseDate: '$date'
-"@
-          Set-Content -Path 'release\latest.yml' -Value $yaml -Encoding UTF8
-          Write-Host "Generated release/latest.yml for v$ver"
+          $lines = @(
+            "version: $ver",
+            "files:",
+            "  - url: $exeName",
+            "    sha512: $sha512",
+            "    size: $size",
+            "path: $exeName",
+            "sha512: $sha512",
+            "releaseDate: '$date'"
+          )
+          $lines -join "`n" | Set-Content -Path 'release\latest.yml' -Encoding UTF8
+          Write-Host "=== Generated release/latest.yml ==="
           Get-Content 'release\latest.yml'
 
       - name: Upload artifact (non-release builds)
@@ -87,22 +87,22 @@ releaseDate: '$date'
             Real-time AI webcam transformation powered by Decart Lucy 2.1.
 
             ### What's new in v1.7.0
-            - **In-app updates** — updates download silently inside the app with a progress bar; no browser redirects
-            - **Auto-update from v1.6.x** — users on v1.6.x are auto-updated via the in-app banner on next launch
-            - **Auto-update from v1.4.x** — old 'open browser' update calls are intercepted and redirected to in-app download
-            - **Fixed streaming** — resolved SDK v0.1.9 API changes that caused 'Stream Failed' errors on launch
-            - **Removed electron-updater** — replaced with native Node.js downloader; zero extra dependencies
+            - **In-app updates** - updates download silently inside the app with a progress bar
+            - **Auto-update from v1.6.x** - users on v1.6.x are auto-updated on next launch via latest.yml
+            - **Auto-update from v1.4.x** - old open-browser update calls are intercepted and handled in-app
+            - **Fixed streaming** - resolved SDK v0.1.9 API changes that caused Stream Failed errors
+            - **Removed electron-updater** - replaced with native Node.js downloader
 
             ### Installation
-            1. Download `StreamStudio-Setup-*.exe` below
-            2. Run the installer — choose your install location
-            3. Launch **Stream Studio** from your desktop or Start Menu
-            4. Enter your [Decart API key](https://app.decart.ai) and start streaming
+            1. Download StreamStudio-Setup-1.7.0.exe below
+            2. Run the installer and choose your install location
+            3. Launch Stream Studio from your desktop or Start Menu
+            4. Enter your Decart API key and start streaming
 
             ### Auto-update
-            - **v1.7.0+** — future updates appear automatically in the app banner within 5 seconds of launch
-            - **v1.6.x** — this release is auto-detected by the existing in-app updater on next launch
-            - **v1.4.x** — download and run this installer manually once; all future updates are handled in-app
+            - v1.7.0+ - future updates appear automatically in-app within 5 seconds of launch
+            - v1.6.x - auto-detected by existing in-app updater on next launch via latest.yml
+            - v1.4.x - download and run this installer once; all future updates are in-app
           files: |
             release/*.exe
             release/latest.yml
