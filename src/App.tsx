@@ -5,6 +5,7 @@ import StreamPage from "./pages/stream";
 import SettingsPage from "./pages/settings";
 import UsagePage from "./pages/usage";
 import PopoutPage from "./pages/popout";
+import ObsoutPage from "./pages/obsout";
 import Toaster from "./components/toaster";
 
 const C = "hsl(187 100% 52%)";
@@ -12,6 +13,7 @@ const C = "hsl(187 100% 52%)";
 declare global {
   interface Window {
     isElectron?: boolean;
+    __ssRemoteStream?: MediaStream | null;
     electronAPI?: {
       onUpdateAvailable: (cb: (info: { version: string }) => void) => void;
       onDownloadProgress: (cb: (info: { percent: number; transferred: number; total: number }) => void) => void;
@@ -64,7 +66,6 @@ function UpdateBanner() {
       borderBottom: `1px solid ${C}44`,
       boxShadow: `0 0 24px hsl(187 100% 52% / 0.12)`,
     }}>
-      {/* Icon + message */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
         <div style={{
           width: 28, height: 28, borderRadius: 8, flexShrink: 0,
@@ -125,7 +126,6 @@ function UpdateBanner() {
         </div>
       </div>
 
-      {/* Action buttons */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
         {state === "available" && (
           <button onClick={handleDownload} style={{
@@ -194,6 +194,9 @@ export default function App() {
       <Switch>
         <Route path="/popout">
           <PopoutPage />
+        </Route>
+        <Route path="/obsout">
+          <ObsoutPage />
         </Route>
         <Route path="/usage">
           <UsagePage />

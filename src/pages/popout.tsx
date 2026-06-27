@@ -4,16 +4,26 @@ export default function PopoutPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
+    const tryGetStream = () => {
+      try {
+        const stream = (window.opener as any)?.__ssRemoteStream as MediaStream | undefined;
+        if (stream && videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch { /* cross-origin guard */ }
+    };
+
+    tryGetStream();
+
     const handler = (e: MessageEvent) => {
-      if (e.data?.type === "stream-studio-stream" && videoRef.current) {
-        try {
-          videoRef.current.srcObject = e.data.stream;
-        } catch { /* ignore */ }
+      if (e.data?.type === "stream-studio-stream") {
+        tryGetStream();
       }
       if (e.data === "stream-studio-clear" && videoRef.current) {
         videoRef.current.srcObject = null;
       }
     };
+
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
   }, []);
@@ -35,7 +45,6 @@ export default function PopoutPage() {
         playsInline
         style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }}
       />
-      {/* Minimal controls overlay */}
       <div style={{
         position: "absolute", bottom: 12, right: 12,
         display: "flex", gap: 8,

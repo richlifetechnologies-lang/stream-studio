@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { AppLayout } from "../components/layout";
 import { useToast } from "../hooks/use-toast";
-import { getApiKey, getSecretKey, hasCredentials } from "../lib/credentials";
+import { getApiKey, hasCredentials } from "../lib/credentials";
 import { sessionStart, sessionTick, sessionEnd } from "../lib/session-store";
 import {
   Zap, Square, Play, Camera, Monitor, Maximize2,
@@ -10,7 +10,6 @@ import {
   Settings, Mic, Wifi, WifiOff,
 } from "lucide-react";
 
-// ─── Decart SDK lazy loader ──────────────────────────────────────────────────
 import type { createDecartClient as CreateDecartClient, models as ModelsType, RealTimeClient } from "@decartai/sdk";
 
 let _sdkCache: unknown = null;
@@ -22,7 +21,6 @@ async function getDecartSdk(): Promise<{
   return _sdkCache as { createDecartClient: typeof CreateDecartClient; models: typeof ModelsType };
 }
 
-// ─── Style presets ───────────────────────────────────────────────────────────
 const STYLES = [
   { id: "hyper-real",  label: "HYPER-REAL",  color: "#00d2d3", prompt: "photorealistic human, ultra-high-definition, natural skin texture, cinematic lighting, professional photography" },
   { id: "anime",       label: "ANIME",        color: "#a29bfe", prompt: "anime art style, cel shading, vibrant colors, clean lines, studio animation quality" },
@@ -42,12 +40,9 @@ function formatTime(s: number) {
 
 const C = "hsl(187 100% 52%)";
 
-// ─── Auto audio-sync engine ───────────────────────────────────────────────────
-// Samples audio energy and video-frame delta in lock-step windows.
-// Cross-correlates them to find the real-time delay, then applies it.
-const WINDOW_MS  = 60;    // sampling interval
-const BUF_SECS   = 6;     // correlation window length
-const BUF_LEN    = Math.round((BUF_SECS * 1000) / WINDOW_MS); // ~100 samples
+const WINDOW_MS  = 60;
+const BUF_SECS   = 6;
+const BUF_LEN    = Math.round((BUF_SECS * 1000) / WINDOW_MS);
 const MAX_DELAY  = 4.0;
 const MIN_DELAY  = 0.2;
 
@@ -90,7 +85,6 @@ class AutoSyncEngine {
       this.audioCtx = ctx; this.analyser = analyser;
       this.delayNode = delay; this.gainNode = gain; this.dest = dest;
 
-      // Set up offscreen canvas for video frame diff
       this.offCanvas = new OffscreenCanvas(80, 45);
       this.offCtx = this.offCanvas.getContext("2d")!;
 
@@ -104,12 +98,10 @@ class AutoSyncEngine {
   private _tick() {
     if (!this.analyser || !this.videoEl) return;
 
-    // ── Audio energy RMS ──────────────────────────────────────────────
     this.analyser.getByteFrequencyData(this.freqData);
     const rms = Math.sqrt(this.freqData.reduce((s, v) => s + v * v, 0) / this.freqData.length) / 128;
     this.vuLevel = Math.min(100, rms * 100);
 
-    // ── Video frame delta ─────────────────────────────────────────────
     let vDelta = 0;
     if (this.offCtx && !this.videoEl.paused && this.videoEl.readyState >= 2) {
       try {
@@ -128,13 +120,11 @@ class AutoSyncEngine {
       } catch { /* cross-origin or not ready */ }
     }
 
-    // Push to ring buffers
     this.audioSig.push(rms);
     this.videoSig.push(vDelta);
     if (this.audioSig.length > BUF_LEN) this.audioSig.shift();
     if (this.videoSig.length > BUF_LEN) this.videoSig.shift();
 
-    // ── Cross-correlation every ~3 s (when buffer has enough data) ──
     if (this.audioSig.length === BUF_LEN && this.audioSig.length % 50 === 0) {
       const maxLagSamples = Math.round((MAX_DELAY * 1000) / WINDOW_MS);
       let bestLag = 0, bestCorr = -Infinity;
@@ -149,7 +139,6 @@ class AutoSyncEngine {
       }
 
       const newDelay = Math.max(MIN_DELAY, Math.min(MAX_DELAY, bestLag * WINDOW_MS / 1000));
-      // Smooth: 80% old, 20% new
       this.detectedDelay = 0.8 * this.detectedDelay + 0.2 * newDelay;
       if (this.delayNode) this.delayNode.delayTime.value = this.detectedDelay;
     }
@@ -170,7 +159,18 @@ class AutoSyncEngine {
   }
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// ─── Helper: get the base URL without any hash, for building popup URLs ───────
+function getBaseUrl(): string {
+  return window.location.href.split("#")[0];
+}
+
+// ─── Helper: notify a popup window that a stream is ready (trigger only) ──────
+function notifyPopup(w: Window | null) {
+  if (w && !w.closed) {
+    try { w.postMessage({ type: "stream-studio-stream" }, "*"); } catch { /* ignore */ }
+  }
+}
+
 export default function StreamPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
@@ -188,7 +188,6 @@ export default function StreamPage() {
   const [selectedStyle, setSelectedStyle]   = useState<StyleId>("hyper-real");
   const [customPrompt, setCustomPrompt]     = useState("");
 
-  // Auto-sync audio state (display only)
   const [syncDelay, setSyncDelay]   = useState(1.2);
   const [vuLevel, setVuLevel]       = useState(0);
   const [audioActive, setAudioActive] = useState(false);
@@ -201,15 +200,16 @@ export default function StreamPage() {
   const [isObsModeActive, setIsObsModeActive] = useState(false);
   const [obsInstructions, setObsInstructions] = useState(false);
 
-  const localVideoRef  = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const localStreamRef = useRef<MediaStream|null>(null);
-  const decartRef      = useRef<RealTimeClient|null>(null);
-  const syncEngineRef  = useRef<AutoSyncEngine|null>(null);
-  const timerRef       = useRef<ReturnType<typeof setInterval>|null>(null);
-  const popoutRef      = useRef<Window|null>(null);
+  const localVideoRef   = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef  = useRef<HTMLVideoElement>(null);
+  const localStreamRef  = useRef<MediaStream|null>(null);
+  const decartRef       = useRef<RealTimeClient|null>(null);
+  const syncEngineRef   = useRef<AutoSyncEngine|null>(null);
+  const timerRef        = useRef<ReturnType<typeof setInterval>|null>(null);
+  const popoutRef       = useRef<Window|null>(null);
+  const obsWindowRef    = useRef<Window|null>(null);
   const remoteStreamRef = useRef<MediaStream|null>(null);
-  const isStartingRef  = useRef(false);
+  const isStartingRef   = useRef(false);
 
   const credsMissing = !hasCredentials();
 
@@ -259,9 +259,18 @@ export default function StreamPage() {
     syncEngineRef.current = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     remoteStreamRef.current = null;
+
+    // Clear the globally shared stream reference
+    window.__ssRemoteStream = null;
+
+    // Notify all popup windows to clear
     if (popoutRef.current && !popoutRef.current.closed) {
       try { popoutRef.current.postMessage("stream-studio-clear", "*"); } catch { /* ignore */ }
     }
+    if (obsWindowRef.current && !obsWindowRef.current.closed) {
+      try { obsWindowRef.current.postMessage("stream-studio-clear", "*"); } catch { /* ignore */ }
+    }
+
     sessionEnd();
     setIsStreaming(false); setConnectionStatus("idle");
     setConnectionStep(null); setElapsedSecs(0);
@@ -291,13 +300,11 @@ export default function StreamPage() {
       const { createDecartClient, models } = await getDecartSdk();
       const client = createDecartClient({ apiKey });
 
-      // Start auto-sync engine (picks default mic automatically)
       const engine = new AutoSyncEngine();
       engine.onUpdate = (delay, vu) => { setSyncDelay(delay); setVuLevel(vu); };
       const audioStream = await engine.start(remoteVideoRef.current!);
       syncEngineRef.current = engine;
 
-      // Combine camera + (optionally) mic
       let combined = localStreamRef.current;
       if (audioStream) {
         const track = audioStream.stream.getAudioTracks()[0];
@@ -310,9 +317,14 @@ export default function StreamPage() {
         onRemoteStream: (remote: MediaStream) => {
           remoteStreamRef.current = remote;
           if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
-          if (popoutRef.current && !popoutRef.current.closed) {
-            try { popoutRef.current.postMessage({ type: "stream-studio-stream", stream: remote }, "*"); } catch { /* ignore */ }
-          }
+
+          // Store globally so popout windows can access via window.opener.__ssRemoteStream
+          window.__ssRemoteStream = remote;
+
+          // Notify any already-open popup windows (trigger only — stream accessed via opener)
+          notifyPopup(popoutRef.current);
+          notifyPopup(obsWindowRef.current);
+
           setConnectionStatus("connected");
         },
         onConnectionChange: (state) => {
@@ -340,7 +352,7 @@ export default function StreamPage() {
       setIsStreaming(true); setConnectionStatus("connected");
     } catch (err) {
       teardownStream();
-      toast({ title: "Stream Failed", description: err instanceof Error ? err.message : "Check your API Key and Secret Key in Settings.", variant: "destructive" });
+      toast({ title: "Stream Failed", description: err instanceof Error ? err.message : "Check your API Key in Settings.", variant: "destructive" });
     } finally {
       isStartingRef.current = false; setIsStarting(false);
     }
@@ -360,26 +372,56 @@ export default function StreamPage() {
     r.readAsDataURL(file); e.target.value = "";
   }, []);
 
-  // ─── OBS / Popout ─────────────────────────────────────────────────────────
+  // ─── Regular popout (controls visible on hover) ───────────────────────────
   const openPopout = useCallback(() => {
     if (popoutRef.current && !popoutRef.current.closed) { popoutRef.current.focus(); return; }
-    const w = window.open("/popout", "ss-popout", "width=1280,height=720,menubar=no,toolbar=no,location=no");
+    const base = getBaseUrl();
+    const w = window.open(base + "#/popout", "ss-popout", "width=1280,height=720,menubar=no,toolbar=no,location=no");
     if (!w) return;
-    popoutRef.current = w; setIsPopoutOpen(true);
-    w.addEventListener("load", () => {
-      if (remoteStreamRef.current) { try { w.postMessage({ type: "stream-studio-stream", stream: remoteStreamRef.current }, "*"); } catch { /* ignore */ } }
-    });
+    popoutRef.current = w;
+    setIsPopoutOpen(true);
+    // When the new window finishes loading, send the stream trigger
+    w.addEventListener("load", () => notifyPopup(w));
     const chk = setInterval(() => {
-      if (w.closed) { clearInterval(chk); setIsPopoutOpen(false); setIsObsModeActive(false); popoutRef.current = null; }
+      if (w.closed) { clearInterval(chk); setIsPopoutOpen(false); popoutRef.current = null; }
     }, 1000);
   }, []);
 
-  const openObsMode = useCallback(() => { openPopout(); setIsObsModeActive(true); setObsInstructions(true); }, [openPopout]);
-  const closePopout = useCallback(() => {
-    if (popoutRef.current && !popoutRef.current.closed) popoutRef.current.close();
-    popoutRef.current = null; setIsPopoutOpen(false); setIsObsModeActive(false); setObsInstructions(false);
+  // ─── OBS clean output window (absolutely no controls) ────────────────────
+  const openObsWindow = useCallback(() => {
+    if (obsWindowRef.current && !obsWindowRef.current.closed) { obsWindowRef.current.focus(); return; }
+    const base = getBaseUrl();
+    const w = window.open(base + "#/obsout", "ss-obsout", "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no");
+    if (!w) return;
+    obsWindowRef.current = w;
+    setIsObsModeActive(true);
+    setObsInstructions(true);
+    // When the new window finishes loading, send the stream trigger
+    w.addEventListener("load", () => notifyPopup(w));
+    const chk = setInterval(() => {
+      if (w.closed) { clearInterval(chk); setIsObsModeActive(false); setObsInstructions(false); obsWindowRef.current = null; }
+    }, 1000);
   }, []);
 
+  const closeObsWindow = useCallback(() => {
+    if (obsWindowRef.current && !obsWindowRef.current.closed) obsWindowRef.current.close();
+    obsWindowRef.current = null;
+    setIsObsModeActive(false);
+    setObsInstructions(false);
+  }, []);
+
+  const closePopout = useCallback(() => {
+    if (popoutRef.current && !popoutRef.current.closed) popoutRef.current.close();
+    popoutRef.current = null;
+    setIsPopoutOpen(false);
+  }, []);
+
+  const closeAllPopups = useCallback(() => {
+    closePopout();
+    closeObsWindow();
+  }, [closePopout, closeObsWindow]);
+
+  // ─── Message listener (from popout windows) ───────────────────────────────
   useEffect(() => {
     const h = (e: MessageEvent) => {
       if (e.data === "stream-studio-stop") teardownStream();
@@ -392,16 +434,32 @@ export default function StreamPage() {
     return () => window.removeEventListener("message", h);
   }, [teardownStream, cameraReady, handleStartStream]);
 
+  // ─── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { closePopout(); if (isStreaming) teardownStream(); setIsFullscreen(false); return; }
+      // ESC: close fullscreen first; if not fullscreen, close popups and stop stream
+      if (e.key === "Escape") {
+        if (isFullscreen) {
+          // Stop the stream AND exit fullscreen (fullscreen = streaming is linked)
+          teardownStream();
+          setIsFullscreen(false);
+          return;
+        }
+        closeAllPopups();
+        if (isStreaming) teardownStream();
+        return;
+      }
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "f" || e.key === "F") { e.preventDefault(); openPopout(); setIsFullscreen(v => !v); }
+      // F: toggle in-app fullscreen overlay of the AI output (NOT a new window)
+      if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
+        setIsFullscreen(v => !v);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [isStreaming, teardownStream, closePopout, openPopout]);
+  }, [isStreaming, isFullscreen, teardownStream, closeAllPopups]);
 
   const style = STYLES.find(s => s.id === selectedStyle)!;
 
@@ -412,7 +470,7 @@ export default function StreamPage() {
         <div style={{ margin: "16px 32px 0", padding: "12px 18px", borderRadius: 10, background: "hsl(40 100% 52% / 0.1)", border: "1px solid hsl(40 100% 52% / 0.35)", display: "flex", alignItems: "center", gap: 12 }}>
           <Settings style={{ width: 16, height: 16, color: "hsl(40 100% 62%)", flexShrink: 0 }} />
           <p style={{ fontSize: 13, color: "hsl(40 100% 75%)", fontFamily: "'Rajdhani',sans-serif", flex: 1 }}>
-            <strong>API Key and Secret Key not set.</strong> Go to Settings to add them before streaming.
+            <strong>API Key not set.</strong> Go to Settings to add it before streaming.
           </p>
           <button onClick={() => setLocation("/settings")} style={{ padding: "6px 14px", borderRadius: 8, background: "hsl(40 100% 52% / 0.25)", border: "1px solid hsl(40 100% 52% / 0.5)", color: "hsl(40 100% 80%)", fontWeight: 700, fontSize: 12, fontFamily: "'Orbitron',monospace", cursor: "pointer", letterSpacing: "0.04em" }}>
             Open Settings
@@ -448,6 +506,53 @@ export default function StreamPage() {
         </div>
       )}
 
+      {/* ── In-app fullscreen overlay (F key or Maximize button) ──────────
+          Shows only the AI output video, no UI chrome.
+          Close button stops the stream and exits fullscreen.           ── */}
+      {isFullscreen && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 9000,
+          background: "#000",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <video
+            autoPlay
+            playsInline
+            ref={(el) => {
+              if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current;
+            }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)", display: "block" }}
+          />
+          {/* Close button — stops the stream */}
+          <button
+            onClick={() => { teardownStream(); setIsFullscreen(false); }}
+            title="Stop stream & exit fullscreen (Esc)"
+            style={{
+              position: "absolute", top: 16, left: 16, zIndex: 10,
+              width: 36, height: 36, borderRadius: "50%",
+              background: "rgba(220,38,38,0.85)", border: "1px solid rgba(255,100,100,0.4)",
+              color: "#fff", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
+            }}
+          >
+            <X style={{ width: 16, height: 16 }} />
+          </button>
+          {/* Elapsed timer */}
+          {isStreaming && (
+            <div style={{
+              position: "absolute", top: 16, right: 16,
+              padding: "4px 12px", borderRadius: 20,
+              background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)",
+              color: C, fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 13,
+              letterSpacing: "0.06em",
+            }}>
+              {formatTime(elapsedSecs)}
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ padding: "24px 32px", maxWidth: 1400, margin: "0 auto" }}>
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22, flexWrap: "wrap", gap: 12 }}>
@@ -458,7 +563,7 @@ export default function StreamPage() {
           {isStreaming && connectionStatus === "connected" && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 10, background: "hsl(0 85% 55% / 0.1)", border: "1px solid hsl(0 85% 55% / 0.2)" }}>
               <span style={{ width: 8, height: 8, borderRadius: "50%", background: "hsl(0 85% 65%)", animation: "pulse 2s ease-in-out infinite" }} />
-              <span style={{ fontSize: 11, color: "hsl(0 85% 70%)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 700 }}>LIVE</span>
+              <span style={{ fontSize: 11, color: "hsl(0 85% 70%)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 700 }}>LIVE · {formatTime(elapsedSecs)}</span>
             </div>
           )}
         </div>
@@ -469,10 +574,13 @@ export default function StreamPage() {
           {/* ── Left column ──────────────────────────────────────────────── */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-            {/* Output video */}
-            <div style={isFullscreen ? { position: "fixed", inset: 0, zIndex: 9999, borderRadius: 0, background: "#000" } : {
-              position: "relative", width: "100%", aspectRatio: "16/9", borderRadius: 14, overflow: "hidden", background: "#000",
-              boxShadow: connectionStatus === "connected" ? `0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)` : "0 0 0 1px hsl(222 40% 14%)",
+            {/* AI Output video panel */}
+            <div style={{
+              position: "relative", width: "100%", aspectRatio: "16/9",
+              borderRadius: 14, overflow: "hidden", background: "#000",
+              boxShadow: connectionStatus === "connected"
+                ? `0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)`
+                : "0 0 0 1px hsl(222 40% 14%)",
             }}>
               <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transform: "scaleX(-1)" }} />
 
@@ -488,52 +596,82 @@ export default function StreamPage() {
                 </div>
               )}
 
-              {isFullscreen && (
-                <button onClick={() => { if (isStreaming) teardownStream(); setIsFullscreen(false); }} style={{ position: "absolute", top: 12, left: 12, zIndex: 20, width: 34, height: 34, borderRadius: "50%", background: "rgba(220,38,38,0.8)", border: "1px solid rgba(255,100,100,0.4)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <X style={{ width: 14, height: 14 }} />
-                </button>
-              )}
-
-              {!isFullscreen && (
-                <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
-                  <div style={{ position: "relative" }}>
-                    <button onClick={isObsModeActive ? closePopout : openObsMode} style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: "#fff", border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer", boxShadow: isObsModeActive ? "0 0 12px rgba(0,210,211,0.4)" : "none" }}>
-                      <Monitor style={{ width: 11, height: 11 }} /> OBS
-                    </button>
-                    {obsInstructions && (
-                      <div style={{ position: "absolute", top: 36, right: 0, width: 240, background: "hsl(222 44% 7%)", border: "1px solid rgba(0,210,211,0.3)", borderRadius: 12, padding: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.6)", zIndex: 30 }}>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: C, fontFamily: "monospace", letterSpacing: 1 }}>● OBS CONNECTED</span>
-                          <button onClick={() => setObsInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
-                        </div>
-                        <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>Clean window open. In OBS → Sources → + → Window Capture → Stream Studio.</p>
+              {/* Top-right action buttons */}
+              <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
+                {/* OBS — opens a completely clean window for window-capture in OBS */}
+                <div style={{ position: "relative" }}>
+                  <button
+                    onClick={isObsModeActive ? closeObsWindow : openObsWindow}
+                    title={isObsModeActive ? "Close OBS window" : "Open clean OBS output window"}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 5,
+                      height: 30, padding: "0 10px", borderRadius: 20,
+                      background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)",
+                      color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff",
+                      border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)",
+                      fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1,
+                      cursor: "pointer",
+                      boxShadow: isObsModeActive ? "0 0 12px rgba(0,210,211,0.4)" : "none",
+                    }}
+                  >
+                    <Monitor style={{ width: 11, height: 11 }} /> OBS
+                  </button>
+                  {obsInstructions && (
+                    <div style={{ position: "absolute", top: 36, right: 0, width: 240, background: "hsl(222 44% 7%)", border: "1px solid rgba(0,210,211,0.3)", borderRadius: 12, padding: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.6)", zIndex: 30 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: C, fontFamily: "monospace", letterSpacing: 1 }}>● OBS WINDOW OPEN</span>
+                        <button onClick={() => setObsInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
                       </div>
-                    )}
-                  </div>
-                  <button onClick={isPopoutOpen && !isObsModeActive ? closePopout : openPopout} style={{ width: 30, height: 30, borderRadius: "50%", background: isPopoutOpen && !isObsModeActive ? "rgba(0,210,211,0.85)" : "rgba(0,0,0,0.6)", border: isPopoutOpen && !isObsModeActive ? "1px solid rgba(0,210,211,0.5)" : "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Monitor style={{ width: 13, height: 13 }} />
-                  </button>
-                  <button onClick={() => setIsFullscreen(v => !v)} title="Fullscreen (F)" style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Maximize2 style={{ width: 13, height: 13 }} />
-                  </button>
-                </div>
-              )}
-
-              {/* PiP local camera */}
-              {!isFullscreen && (
-                <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000", boxShadow: "0 4px 20px rgba(0,0,0,0.6)" }}>
-                  <video ref={localVideoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
-                  {!cameraReady && (
-                    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
-                      <Camera style={{ width: 18, height: 18, color: "hsl(222 25% 50%)" }} />
-                      <button onClick={() => startCamera()} style={{ fontSize: 10, color: C, fontWeight: 700, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>Enable Camera</button>
+                      <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
+                        Clean output window is open — no controls or UI. In OBS → Sources → + → Window Capture → select "Stream Studio OBS".
+                      </p>
                     </div>
                   )}
-                  <div style={{ position: "absolute", bottom: 3, left: 4, right: 4, background: "rgba(0,0,0,0.7)", borderRadius: 4, fontSize: 8, color: "rgba(255,255,255,0.6)", fontFamily: "monospace", padding: "1px 4px", letterSpacing: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    INPUT{cameras.length && selectedCameraId ? ` · ${cameras.find(c => c.deviceId === selectedCameraId)?.label || "Camera"}` : ""}
-                  </div>
                 </div>
-              )}
+
+                {/* Regular popout (controls on hover) */}
+                <button
+                  onClick={isPopoutOpen ? closePopout : openPopout}
+                  title={isPopoutOpen ? "Close popout" : "Open popout window"}
+                  style={{
+                    width: 30, height: 30, borderRadius: "50%",
+                    background: isPopoutOpen ? "rgba(0,210,211,0.85)" : "rgba(0,0,0,0.6)",
+                    border: isPopoutOpen ? "1px solid rgba(0,210,211,0.5)" : "1px solid rgba(255,255,255,0.2)",
+                    color: "#fff", cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  <Monitor style={{ width: 13, height: 13 }} />
+                </button>
+
+                {/* Fullscreen (in-app overlay) */}
+                <button
+                  onClick={() => setIsFullscreen(v => !v)}
+                  title="Fullscreen AI output (F)"
+                  style={{
+                    width: 30, height: 30, borderRadius: "50%",
+                    background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)",
+                    color: "#fff", cursor: "pointer",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                >
+                  <Maximize2 style={{ width: 13, height: 13 }} />
+                </button>
+              </div>
+
+              {/* PiP local camera */}
+              <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000", boxShadow: "0 4px 20px rgba(0,0,0,0.6)" }}>
+                <video ref={localVideoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
+                {!cameraReady && (
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
+                    <Camera style={{ width: 18, height: 18, color: "hsl(222 25% 50%)" }} />
+                    <button onClick={() => startCamera()} style={{ fontSize: 10, color: C, fontWeight: 700, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>Enable Camera</button>
+                  </div>
+                )}
+                <div style={{ position: "absolute", bottom: 3, left: 4, right: 4, background: "rgba(0,0,0,0.7)", borderRadius: 4, fontSize: 8, color: "rgba(255,255,255,0.6)", fontFamily: "monospace", padding: "1px 4px", letterSpacing: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  INPUT{cameras.length && selectedCameraId ? ` · ${cameras.find(c => c.deviceId === selectedCameraId)?.label || "Camera"}` : ""}
+                </div>
+              </div>
             </div>
 
             {/* Camera selector */}
@@ -586,7 +724,12 @@ export default function StreamPage() {
                 <span style={{ fontSize: 12, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em" }}>OBS Setup</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {[["1","Start your stream here first — audio sync is automatic"],["2","OBS → Sources → + → Window Capture → Stream Studio"],["3","No separate mic source needed — audio is pre-synced"]].map(([n, text]) => (
+                {[
+                  ["1", "Start your stream here first — audio sync is automatic"],
+                  ["2", "Click the OBS button above the video to open a clean output window"],
+                  ["3", "In OBS: Sources → + → Window Capture → select the OBS output window"],
+                  ["4", "No separate mic needed — audio is pre-synced automatically"],
+                ].map(([n, text]) => (
                   <div key={n} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                     <span style={{ width: 18, height: 18, borderRadius: "50%", flexShrink: 0, background: "hsl(187 100% 52% / 0.15)", color: C, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{n}</span>
                     <p style={{ fontSize: 12, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5 }}>{text}</p>
@@ -619,7 +762,7 @@ export default function StreamPage() {
               {customPrompt && <button onClick={() => setCustomPrompt("")} style={{ marginTop: 6, fontSize: 11, color: "hsl(222 25% 50%)", background: "none", border: "none", cursor: "pointer", fontFamily: "'Rajdhani',sans-serif" }}>↺ Reset to preset</button>}
             </div>
 
-            {/* Auto Audio Sync (display only) */}
+            {/* Auto Audio Sync */}
             <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 16 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                 <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace" }}>Audio Sync</p>
@@ -635,7 +778,6 @@ export default function StreamPage() {
 
               {audioActive ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {/* VU meter */}
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
                       <Mic style={{ width: 11, height: 11, color: C }} />
@@ -645,8 +787,6 @@ export default function StreamPage() {
                       <div style={{ height: "100%", borderRadius: 3, transition: "width 0.05s", width: `${vuLevel}%`, background: vuLevel > 80 ? "hsl(0 85% 55%)" : vuLevel > 50 ? "hsl(40 100% 55%)" : C }} />
                     </div>
                   </div>
-
-                  {/* Detected delay */}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderRadius: 8, background: "hsl(222 40% 8%)", border: "1px solid hsl(222 40% 12%)" }}>
                     <span style={{ fontSize: 12, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>Detected Delay</span>
                     <span style={{ fontSize: 14, fontWeight: 700, color: C, fontFamily: "'Orbitron',monospace" }}>{syncDelay.toFixed(2)}s</span>
@@ -658,7 +798,7 @@ export default function StreamPage() {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <p style={{ fontSize: 12, color: "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5 }}>
-                    When you click <strong style={{ color: "hsl(190 80% 80%)" }}>Stream Now</strong>, your default microphone is automatically detected and the audio delay is calibrated to match the AI video output in real time. No manual setup needed.
+                    When you click <strong style={{ color: "hsl(190 80% 80%)" }}>Stream Now</strong>, your default microphone is automatically detected and the audio delay is calibrated to match the AI video output in real time.
                   </p>
                 </div>
               )}
@@ -686,7 +826,10 @@ export default function StreamPage() {
             <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 14 }}>
               <p style={{ fontSize: 10, fontWeight: 700, color: "hsl(222 25% 40%)", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace", marginBottom: 10 }}>Shortcuts</p>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {[["F", "Fullscreen + OBS popout"], ["Esc", "Stop stream & close windows"]].map(([key, desc]) => (
+                {[
+                  ["F", "Fullscreen AI output (in-app overlay)"],
+                  ["Esc", "Stop stream & exit fullscreen"],
+                ].map(([key, desc]) => (
                   <div key={key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <kbd style={{ padding: "2px 7px", borderRadius: 5, background: "hsl(222 40% 9%)", border: "1px solid hsl(222 40% 16%)", color: "hsl(190 80% 90%)", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{key}</kbd>
                     <span style={{ fontSize: 11, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif" }}>{desc}</span>
