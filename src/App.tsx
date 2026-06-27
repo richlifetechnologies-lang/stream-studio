@@ -3,6 +3,7 @@ import { useHashLocation } from "wouter/use-hash-location";
 import { useState, useEffect } from "react";
 import StreamPage from "./pages/stream";
 import SettingsPage from "./pages/settings";
+import UsagePage from "./pages/usage";
 import PopoutPage from "./pages/popout";
 import Toaster from "./components/toaster";
 
@@ -193,6 +194,9 @@ export default function App() {
       <Switch>
         <Route path="/popout">
           <PopoutPage />
+        </Route>
+        <Route path="/usage">
+          <UsagePage />
         </Route>
         <Route path="/settings">
           <SettingsPage />

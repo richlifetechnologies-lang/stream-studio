@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { AppLayout } from "../components/layout";
 import { useToast } from "../hooks/use-toast";
 import { getApiKey, getSecretKey, hasCredentials } from "../lib/credentials";
+import { sessionStart, sessionTick, sessionEnd } from "../lib/session-store";
 import {
   Zap, Square, Play, Camera, Monitor, Maximize2,
   RefreshCw, ChevronDown, Image, Loader2, X,
@@ -179,7 +180,6 @@ export default function StreamPage() {
   const [isStarting, setIsStarting]    = useState(false);
   const [connectionStep, setConnectionStep] = useState<"auth"|"engine"|null>(null);
   const [elapsedSecs, setElapsedSecs]  = useState(0);
-  const [credits, setCredits]          = useState(0);
 
   const [cameras, setCameras]               = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState("");
@@ -262,8 +262,9 @@ export default function StreamPage() {
     if (popoutRef.current && !popoutRef.current.closed) {
       try { popoutRef.current.postMessage("stream-studio-clear", "*"); } catch { /* ignore */ }
     }
+    sessionEnd();
     setIsStreaming(false); setConnectionStatus("idle");
-    setConnectionStep(null); setElapsedSecs(0); setCredits(0);
+    setConnectionStep(null); setElapsedSecs(0);
     setAudioActive(false); setSyncDelay(1.2); setVuLevel(0);
   }, []);
 
@@ -329,11 +330,12 @@ export default function StreamPage() {
 
       if (refImageB64) { try { await rt.setImage(refImageB64); } catch { /* non-fatal */ } }
 
+      sessionStart();
       const t0 = Date.now();
       timerRef.current = setInterval(() => {
         const s = Math.floor((Date.now() - t0) / 1000);
         setElapsedSecs(s);
-        setCredits(s * 2);
+        sessionTick(s);
       }, 1000);
       setIsStreaming(true); setConnectionStatus("connected");
     } catch (err) {
@@ -454,21 +456,10 @@ export default function StreamPage() {
             <p style={{ fontSize: 13, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>Real-time AI video transformation</p>
           </div>
           {isStreaming && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              {/* Live timer */}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderRadius: 10, background: "hsl(0 85% 55% / 0.1)", border: "1px solid hsl(0 85% 55% / 0.2)" }}>
-                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "hsl(0 85% 65%)", animation: "pulse 2s ease-in-out infinite" }} />
-                <span style={{ color: "hsl(0 85% 70%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 13, letterSpacing: "0.06em" }}>{formatTime(elapsedSecs)}</span>
-                {connectionStatus === "connected" && <span style={{ fontSize: 11, color: "hsl(143 72% 55%)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 700 }}>● LIVE</span>}
-              </div>
-              {/* Cost tracker */}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderRadius: 10, background: "hsl(187 100% 52% / 0.07)", border: "1px solid hsl(187 100% 52% / 0.2)" }}>
-                <Zap style={{ width: 13, height: 13, color: C, flexShrink: 0 }} />
-                <div style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}>
-                  <span style={{ fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 12, letterSpacing: "0.06em", color: C }}>{credits.toLocaleString()} credits</span>
-                  <span style={{ fontSize: 10, color: "hsl(187 100% 52% / 0.65)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 600 }}>${(credits * 0.01).toFixed(2)} used · 2 cr/s</span>
-                </div>
-              </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderRadius: 10, background: "hsl(0 85% 55% / 0.1)", border: "1px solid hsl(0 85% 55% / 0.2)" }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "hsl(0 85% 65%)", animation: "pulse 2s ease-in-out infinite" }} />
+              <span style={{ color: "hsl(0 85% 70%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 13, letterSpacing: "0.06em" }}>{formatTime(elapsedSecs)}</span>
+              {connectionStatus === "connected" && <span style={{ fontSize: 11, color: "hsl(143 72% 55%)", fontFamily: "'Rajdhani',sans-serif", fontWeight: 700 }}>● LIVE</span>}
             </div>
           )}
         </div>
