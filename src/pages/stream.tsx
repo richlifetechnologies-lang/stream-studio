@@ -10,24 +10,15 @@ import {
 } from "lucide-react";
 
 // ─── Decart SDK lazy loader ──────────────────────────────────────────────────
+import type { createDecartClient as CreateDecartClient, models as ModelsType, RealTimeClient } from "@decartai/sdk";
+
 let _sdkCache: unknown = null;
-async function getDecartSdk() {
+async function getDecartSdk(): Promise<{
+  createDecartClient: typeof CreateDecartClient;
+  models: typeof ModelsType;
+}> {
   if (!_sdkCache) _sdkCache = await import("@decartai/sdk");
-  return _sdkCache as {
-    createDecartClient: (opts: { apiKey: string }) => {
-      realtime: {
-        connect: (stream: MediaStream, opts: {
-          model: string; prompt: string; frameRate?: number;
-        }) => Promise<{
-          on: (ev: string, cb: (s: MediaStream) => void) => void;
-          onConnectionStateChange: (cb: (state: string) => void) => void;
-          disconnect: () => void;
-          addImage: (img: string) => Promise<void>;
-        }>;
-      };
-    };
-    models: { LUCY: string };
-  };
+  return _sdkCache as { createDecartClient: typeof CreateDecartClient; models: typeof ModelsType };
 }
 
 // ─── Style presets ───────────────────────────────────────────────────────────
@@ -212,7 +203,7 @@ export default function StreamPage() {
   const localVideoRef  = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream|null>(null);
-  const decartRef      = useRef<{ disconnect?: () => void; addImage?: (i:string)=>Promise<void> }|null>(null);
+  const decartRef      = useRef<RealTimeClient|null>(null);
   const syncEngineRef  = useRef<AutoSyncEngine|null>(null);
   const timerRef       = useRef<ReturnType<typeof setInterval>|null>(null);
   const popoutRef      = useRef<Window|null>(null);
@@ -261,7 +252,7 @@ export default function StreamPage() {
   const teardownStream = useCallback(() => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     isStartingRef.current = false;
-    try { decartRef.current?.disconnect?.(); } catch { /* ignore */ }
+    try { decartRef.current?.disconnect(); } catch { /* ignore */ }
     decartRef.current = null;
     syncEngineRef.current?.stop();
     syncEngineRef.current = null;
@@ -313,30 +304,29 @@ export default function StreamPage() {
       }
 
       const rt = await client.realtime.connect(combined, {
-        model: models.LUCY ?? "lucy-2.1",
-        prompt,
-        frameRate: 30,
+        model: models.realtime("lucy-2.1"),
+        onRemoteStream: (remote: MediaStream) => {
+          remoteStreamRef.current = remote;
+          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
+          if (popoutRef.current && !popoutRef.current.closed) {
+            try { popoutRef.current.postMessage({ type: "stream-studio-stream", stream: remote }, "*"); } catch { /* ignore */ }
+          }
+          setConnectionStatus("connected");
+        },
+        onConnectionChange: (state) => {
+          if (state === "connected") setConnectionStatus("connected");
+          else if ((state === "disconnected" || state === "failed") && isStartingRef.current) {
+            teardownStream();
+            toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" });
+          }
+        },
+        initialState: {
+          prompt: { text: prompt },
+        },
       });
       decartRef.current = rt;
 
-      rt.on("track", (remote: MediaStream) => {
-        remoteStreamRef.current = remote;
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
-        if (popoutRef.current && !popoutRef.current.closed) {
-          try { popoutRef.current.postMessage({ type: "stream-studio-stream", stream: remote }, "*"); } catch { /* ignore */ }
-        }
-        setConnectionStatus("connected");
-      });
-
-      rt.onConnectionStateChange((state: string) => {
-        if (state === "connected") setConnectionStatus("connected");
-        else if ((state === "disconnected" || state === "failed") && isStartingRef.current) {
-          teardownStream();
-          toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" });
-        }
-      });
-
-      if (refImageB64) { try { await rt.addImage(refImageB64); } catch { /* non-fatal */ } }
+      if (refImageB64) { try { await rt.setImage(refImageB64); } catch { /* non-fatal */ } }
 
       const t0 = Date.now();
       timerRef.current = setInterval(() => setElapsedSecs(Math.floor((Date.now() - t0) / 1000)), 1000);
@@ -358,7 +348,7 @@ export default function StreamPage() {
     r.onload = ev => {
       const data = ev.target?.result as string;
       setRefImagePreview(data); setRefImageB64(data.split(",")[1] ?? data);
-      decartRef.current?.addImage?.(data.split(",")[1] ?? data).catch(() => {});
+      decartRef.current?.setImage(data.split(",")[1] ?? data).catch(() => {});
     };
     r.readAsDataURL(file); e.target.value = "";
   }, []);
