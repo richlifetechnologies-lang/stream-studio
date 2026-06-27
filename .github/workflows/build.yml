@@ -1,73 +1,79 @@
 name: Build & Release
 
-  on:
-    push:
-      branches: [main]
-      tags: ["v*"]
-    workflow_dispatch:
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to publish (e.g. v1.7.0). Leave empty to skip release.'
+        required: false
+        default: ''
 
-  permissions:
-    contents: write
+permissions:
+  contents: write
 
-  jobs:
-    build-windows:
-      name: Build Windows Installer
-      runs-on: windows-latest
+jobs:
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
 
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
-        - name: Setup Node.js
-          uses: actions/setup-node@v4
-          with:
-            node-version: "20"
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-        - name: Install dependencies
-          run: npm install
+      - name: Install dependencies
+        run: npm install
 
-        - name: Build & package
-          run: npm run dist:win
-          env:
-            ELECTRON_BUILDER_PUBLISH: never
+      - name: Build & package
+        run: npm run dist:win
+        env:
+          ELECTRON_BUILDER_PUBLISH: never
 
-        - name: Upload artifact (non-tag builds)
-          if: "!startsWith(github.ref, 'refs/tags/')"
-          uses: actions/upload-artifact@v4
-          with:
-            name: stream-studio-windows-${{ github.run_number }}
-            path: release/*.exe
-            retention-days: 30
+      - name: Upload artifact (non-release builds)
+        if: "!startsWith(github.ref, 'refs/tags/') && inputs.release_tag == ''"
+        uses: actions/upload-artifact@v4
+        with:
+          name: stream-studio-windows-${{ github.run_number }}
+          path: release/*.exe
+          retention-days: 30
 
-        - name: Create GitHub Release (tag builds)
-          if: startsWith(github.ref, 'refs/tags/')
-          uses: softprops/action-gh-release@v2
-          with:
-            name: Stream Studio ${{ github.ref_name }}
-            body: |
-              ## Stream Studio ${{ github.ref_name }}
+      - name: Create GitHub Release
+        if: "startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          name: Stream Studio ${{ inputs.release_tag || github.ref_name }}
+          body: |
+            ## Stream Studio ${{ inputs.release_tag || github.ref_name }}
 
-              Real-time AI webcam transformation powered by Decart Lucy 2.1.
+            Real-time AI webcam transformation powered by Decart Lucy 2.1.
 
-              ### What's new in ${{ github.ref_name }}
-              - **In-app updates** — updates download silently inside the app with a progress bar; no browser redirects
-              - **Auto-update from v1.4.0+** — old installs using the "open browser" update flow are now intercepted and handled in-app
-              - **Fixed streaming** — resolved SDK v0.1.9 API changes causing "Stream Failed" errors on launch
-              - **Cleaner startup** — removed electron-updater; native Node.js downloader uses zero extra packages
+            ### What's new in v1.7.0
+            - **In-app updates** — updates now download silently inside the app with a progress bar; no browser redirects
+            - **Auto-update from v1.4.0+** — old installs that used the 'open browser' update flow are now intercepted and handled in-app
+            - **Fixed streaming** — resolved SDK v0.1.9 API changes that caused 'Stream Failed' errors on launch
+            - **Removed electron-updater** — native Node.js downloader; zero extra dependencies
 
-              ### Installation
-              1. Download `StreamStudio-Setup-*.exe` below
-              2. Run the installer — choose your install location
-              3. Launch **Stream Studio** from your desktop or Start Menu
-              4. Enter your [Decart API key](https://app.decart.ai) and start streaming
+            ### Installation
+            1. Download `StreamStudio-Setup-*.exe` below
+            2. Run the installer
+            3. Launch **Stream Studio** from your desktop or Start Menu
+            4. Enter your [Decart API key](https://app.decart.ai) and start streaming
 
-              ### Upgrading from an older version
-              - **v1.6.x users** — the in-app update banner appears automatically within 5 s of launch; click **Download** then **Install & Restart**
-              - **v1.4.x users** — download and run this installer manually once; future updates are handled in-app
-
-            files: release/*.exe
-            token: ${{ secrets.GITHUB_TOKEN }}
-            draft: false
-            prerelease: false
-            fail_on_unmatched_files: false
-  
+            ### Upgrading
+            - **v1.6.x** — the in-app banner appears automatically within 5 s of launch
+            - **v1.4.x** — download and run this installer once; future updates are handled in-app
+          files: release/*.exe
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
