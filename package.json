@@ -1,6 +1,6 @@
 {
   "name": "stream-studio",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Real-time AI webcam transformation powered by Decart Lucy 2.1",
   "main": "dist-electron/main.js",
   "author": "Rich Life Technologies",

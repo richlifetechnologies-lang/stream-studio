@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, session, ipcMain } from "electron";
+import { app, BrowserWindow, shell, session, ipcMain, dialog } from "electron";
 import https from "https";
 import http from "http";
 import fs from "fs";
@@ -251,8 +251,36 @@ function createWindow() {
   });
 }
 
+// ─── macOS first-launch Gatekeeper notice ────────────────────────────────────
+function showMacFirstLaunchNotice() {
+  if (process.platform !== "darwin" || isDev) return;
+  const flagPath = path.join(app.getPath("userData"), ".mac-first-launch-shown");
+  if (fs.existsSync(flagPath)) return;
+  try { fs.writeFileSync(flagPath, "1"); } catch { /* ignore */ }
+
+  // Show after a short delay so the window is fully painted
+  setTimeout(() => {
+    if (!mainWindow) return;
+    dialog.showMessageBox(mainWindow, {
+      type: "info",
+      title: "Welcome to Stream Studio",
+      message: "One-time Mac setup complete",
+      detail:
+        "If macOS blocked this app when you first opened it, here's how to fix it:\n\n" +
+        "1. Close Stream Studio\n" +
+        "2. Right-click the app icon (or DMG) → Open\n" +
+        "3. Click Open in the security dialog\n\n" +
+        "You only need to do this once. After that it launches normally.\n\n" +
+        "This happens because Stream Studio isn't signed with a paid Apple Developer certificate.",
+      buttons: ["Got it"],
+      defaultId: 0,
+    });
+  }, 2000);
+}
+
 app.whenReady().then(() => {
   createWindow();
+  showMacFirstLaunchNotice();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
