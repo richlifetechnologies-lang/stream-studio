@@ -10,6 +10,14 @@ on:
         description: 'Release tag to publish (e.g. v1.7.0). Leave empty to skip release.'
         required: false
         default: ''
+      build_windows:
+        description: 'Build Windows installer (true/false)'
+        required: false
+        default: 'true'
+      build_mac:
+        description: 'Build macOS DMGs (true/false)'
+        required: false
+        default: 'true'
 
 permissions:
   contents: write
@@ -20,12 +28,13 @@ jobs:
   build-windows:
     name: Build Windows (x64)
     runs-on: windows-latest
+    if: "inputs.build_windows != 'false'"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -41,7 +50,7 @@ jobs:
       - name: Package Windows installer
         run: npx electron-builder --win --x64 --publish never
 
-      - name: Generate latest.yml for Windows auto-updater
+      - name: Generate latest.yml
         shell: pwsh
         run: |
           $exePath = (Get-Item 'release\StreamStudio-Setup-*.exe').FullName
@@ -64,10 +73,9 @@ jobs:
             "releaseDate: '$date'"
           )
           $lines -join "`n" | Set-Content -Path 'release\latest.yml' -Encoding UTF8
-          Write-Host "=== Generated release/latest.yml ==="
           Get-Content 'release\latest.yml'
 
-      - name: Upload artifact (non-release builds)
+      - name: Upload artifact (non-release)
         if: "!startsWith(github.ref, 'refs/tags/') && inputs.release_tag == ''"
         uses: actions/upload-artifact@v4
         with:
@@ -88,12 +96,6 @@ jobs:
 
             Real-time AI webcam transformation powered by Decart Lucy 2.1.
 
-            ### What's new in v1.7.0
-            - **In-app updates** - updates download silently inside the app with a progress bar
-            - **Fixed streaming** - resolved SDK v0.1.9 API changes that caused Stream Failed errors
-            - **Removed electron-updater** - replaced with native Node.js downloader
-            - **Auto-update from v1.6.x** - detected automatically on next launch via latest.yml
-
             ### Downloads
             | Platform | File |
             |----------|------|
@@ -102,7 +104,7 @@ jobs:
             | macOS Intel | StreamStudio-*-x64.dmg |
 
             ### macOS first launch
-            If macOS blocks the app ("unidentified developer"), right-click the DMG and choose Open.
+            If macOS blocks the app, right-click the DMG and choose Open to bypass Gatekeeper.
           files: |
             release/*.exe
             release/latest.yml
@@ -115,12 +117,13 @@ jobs:
   build-mac-arm64:
     name: Build macOS Apple Silicon (arm64)
     runs-on: macos-latest
+    if: "inputs.build_mac != 'false'"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -139,10 +142,13 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Generate latest-mac-arm64.yml
-        shell: python3
+        shell: python
         run: |
           import os, hashlib, base64, datetime, glob
-          dmg = glob.glob('release/StreamStudio-*-arm64.dmg')[0]
+          matches = glob.glob('release/StreamStudio-*.dmg')
+          dmg = next((f for f in matches if 'arm64' in f), matches[0] if matches else None)
+          if not dmg:
+              raise FileNotFoundError('No DMG found in release/')
           name = os.path.basename(dmg)
           data = open(dmg, 'rb').read()
           sha512 = base64.b64encode(hashlib.sha512(data).digest()).decode()
@@ -150,26 +156,26 @@ jobs:
           ver = '${{ inputs.release_tag || github.ref_name }}'.lstrip('v')
           date = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
           content = (
-            f"version: {ver}\n"
-            f"files:\n"
-            f"  - url: {name}\n"
-            f"    sha512: {sha512}\n"
-            f"    size: {size}\n"
-            f"path: {name}\n"
-            f"sha512: {sha512}\n"
-            f"releaseDate: '{date}'\n"
+              'version: ' + ver + '\n' +
+              'files:\n' +
+              '  - url: ' + name + '\n' +
+              '    sha512: ' + sha512 + '\n' +
+              '    size: ' + str(size) + '\n' +
+              'path: ' + name + '\n' +
+              'sha512: ' + sha512 + '\n' +
+              "releaseDate: '" + date + "'\n"
           )
           open('release/latest-mac-arm64.yml', 'w').write(content)
-          print("=== latest-mac-arm64.yml ===")
+          print('=== release/latest-mac-arm64.yml ===')
           print(content)
 
-      - name: Upload artifact (non-release builds)
+      - name: Upload artifact (non-release)
         if: "!startsWith(github.ref, 'refs/tags/') && inputs.release_tag == ''"
         uses: actions/upload-artifact@v4
         with:
           name: stream-studio-mac-arm64-${{ github.run_number }}
           path: |
-            release/*-arm64.dmg
+            release/*.dmg
             release/latest-mac-arm64.yml
           retention-days: 30
 
@@ -180,7 +186,7 @@ jobs:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           name: Stream Studio ${{ inputs.release_tag || github.ref_name }}
           files: |
-            release/*-arm64.dmg
+            release/*.dmg
             release/latest-mac-arm64.yml
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
@@ -191,12 +197,13 @@ jobs:
   build-mac-intel:
     name: Build macOS Intel (x64)
     runs-on: macos-13
+    if: "inputs.build_mac != 'false'"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && 'main' || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -214,11 +221,14 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Generate latest-mac.yml (Intel / default)
-        shell: python3
+      - name: Generate latest-mac.yml
+        shell: python
         run: |
           import os, hashlib, base64, datetime, glob
-          dmg = glob.glob('release/StreamStudio-*-x64.dmg')[0]
+          matches = glob.glob('release/StreamStudio-*.dmg')
+          dmg = next((f for f in matches if 'x64' in f), matches[0] if matches else None)
+          if not dmg:
+              raise FileNotFoundError('No DMG found in release/')
           name = os.path.basename(dmg)
           data = open(dmg, 'rb').read()
           sha512 = base64.b64encode(hashlib.sha512(data).digest()).decode()
@@ -226,26 +236,26 @@ jobs:
           ver = '${{ inputs.release_tag || github.ref_name }}'.lstrip('v')
           date = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
           content = (
-            f"version: {ver}\n"
-            f"files:\n"
-            f"  - url: {name}\n"
-            f"    sha512: {sha512}\n"
-            f"    size: {size}\n"
-            f"path: {name}\n"
-            f"sha512: {sha512}\n"
-            f"releaseDate: '{date}'\n"
+              'version: ' + ver + '\n' +
+              'files:\n' +
+              '  - url: ' + name + '\n' +
+              '    sha512: ' + sha512 + '\n' +
+              '    size: ' + str(size) + '\n' +
+              'path: ' + name + '\n' +
+              'sha512: ' + sha512 + '\n' +
+              "releaseDate: '" + date + "'\n"
           )
           open('release/latest-mac.yml', 'w').write(content)
-          print("=== latest-mac.yml ===")
+          print('=== release/latest-mac.yml ===')
           print(content)
 
-      - name: Upload artifact (non-release builds)
+      - name: Upload artifact (non-release)
         if: "!startsWith(github.ref, 'refs/tags/') && inputs.release_tag == ''"
         uses: actions/upload-artifact@v4
         with:
           name: stream-studio-mac-intel-${{ github.run_number }}
           path: |
-            release/*-x64.dmg
+            release/*.dmg
             release/latest-mac.yml
           retention-days: 30
 
@@ -256,7 +266,7 @@ jobs:
           tag_name: ${{ inputs.release_tag || github.ref_name }}
           name: Stream Studio ${{ inputs.release_tag || github.ref_name }}
           files: |
-            release/*-x64.dmg
+            release/*.dmg
             release/latest-mac.yml
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
