@@ -33,17 +33,46 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build & package
-        run: npm run dist:win
-        env:
-          ELECTRON_BUILDER_PUBLISH: never
+      - name: Build web + electron
+        run: npm run build
+
+      - name: Package Windows installer (no auto-publish)
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: Generate latest.yml for auto-updater
+        shell: pwsh
+        run: |
+          $exePath = (Get-Item 'release\StreamStudio-Setup-*.exe').FullName
+          $exeName = (Get-Item 'release\StreamStudio-Setup-*.exe').Name
+          $bytes   = [System.IO.File]::ReadAllBytes($exePath)
+          $sha512  = [Convert]::ToBase64String(
+            [System.Security.Cryptography.SHA512]::Create().ComputeHash($bytes)
+          )
+          $size    = (Get-Item $exePath).Length
+          $ver     = '${{ inputs.release_tag || github.ref_name }}'.TrimStart('v')
+          $date    = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ss.fffZ')
+          $yaml = @"
+version: $ver
+files:
+  - url: $exeName
+    sha512: $sha512
+    size: $size
+path: $exeName
+sha512: $sha512
+releaseDate: '$date'
+"@
+          Set-Content -Path 'release\latest.yml' -Value $yaml -Encoding UTF8
+          Write-Host "Generated release/latest.yml for v$ver"
+          Get-Content 'release\latest.yml'
 
       - name: Upload artifact (non-release builds)
         if: "!startsWith(github.ref, 'refs/tags/') && inputs.release_tag == ''"
         uses: actions/upload-artifact@v4
         with:
           name: stream-studio-windows-${{ github.run_number }}
-          path: release/*.exe
+          path: |
+            release/*.exe
+            release/latest.yml
           retention-days: 30
 
       - name: Create GitHub Release
@@ -58,22 +87,26 @@ jobs:
             Real-time AI webcam transformation powered by Decart Lucy 2.1.
 
             ### What's new in v1.7.0
-            - **In-app updates** — updates now download silently inside the app with a progress bar; no browser redirects
-            - **Auto-update from v1.4.0+** — old installs that used the 'open browser' update flow are now intercepted and handled in-app
+            - **In-app updates** — updates download silently inside the app with a progress bar; no browser redirects
+            - **Auto-update from v1.6.x** — users on v1.6.x are auto-updated via the in-app banner on next launch
+            - **Auto-update from v1.4.x** — old 'open browser' update calls are intercepted and redirected to in-app download
             - **Fixed streaming** — resolved SDK v0.1.9 API changes that caused 'Stream Failed' errors on launch
-            - **Removed electron-updater** — native Node.js downloader; zero extra dependencies
+            - **Removed electron-updater** — replaced with native Node.js downloader; zero extra dependencies
 
             ### Installation
             1. Download `StreamStudio-Setup-*.exe` below
-            2. Run the installer
+            2. Run the installer — choose your install location
             3. Launch **Stream Studio** from your desktop or Start Menu
             4. Enter your [Decart API key](https://app.decart.ai) and start streaming
 
-            ### Upgrading
-            - **v1.6.x** — the in-app banner appears automatically within 5 s of launch
-            - **v1.4.x** — download and run this installer once; future updates are handled in-app
-          files: release/*.exe
+            ### Auto-update
+            - **v1.7.0+** — future updates appear automatically in the app banner within 5 seconds of launch
+            - **v1.6.x** — this release is auto-detected by the existing in-app updater on next launch
+            - **v1.4.x** — download and run this installer manually once; all future updates are handled in-app
+          files: |
+            release/*.exe
+            release/latest.yml
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
