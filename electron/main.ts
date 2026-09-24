@@ -237,7 +237,14 @@ function createWindow() {
       nodeIntegration: false,
       webSecurity: true,
       allowRunningInsecureContent: false,
+      mediaPlaybackRequiresUserGesture: false,
     },
+  });
+
+  // Grant media/camera/mic permissions automatically — required for WebRTC in Electron
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    const allowed = ["media", "audioCapture", "videoCapture", "displayCapture"];
+    callback(allowed.includes(permission));
   });
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
