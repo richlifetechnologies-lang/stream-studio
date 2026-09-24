@@ -10,6 +10,7 @@ import {
   Settings, Mic, Wifi, WifiOff,
 } from "lucide-react";
 import { fal } from "@fal-ai/client";
+import { lucyRealtime } from "@fal-ai/client/realtime/lucy";
 
 // ─── Style presets ────────────────────────────────────────────────────────────
 const STYLES = [
@@ -129,29 +130,20 @@ class AutoSyncEngine {
 
 // ─── fal.ai Lucy 2.5 WebRTC engine ───────────────────────────────────────────
 //
-// Per official docs at https://fal.ai/models/decart/lucy-2-5/realtime/api:
+// Uses fal.realtime.open(lucyRealtime()) — the official SDK extension for Lucy
+// from @fal-ai/client 1.11.0-alpha.4 which exports ./realtime/lucy.
 //
-//   const connection = fal.realtime.connect("decart/lucy-2-5/realtime", {
-//     onResult: (result) => { ... },  // receives { type, sdp } signaling frames
-//     onError:  (error)  => { ... },
-//     tokenProvider: async (app) => { /* fetch JWT from backend */ },
-//     tokenExpirationSeconds: 10,
-//   });
-//   connection.send({});  // empty send starts the WebRTC handshake
+// lucyRealtime() handles all WebRTC signaling internally:
+//   - Opens the fal WebSocket with token auth
+//   - Exchanges SDP offer/answer and ICE candidates
+//   - Delivers remote MediaStream via context.media() → onMedia callback
+//   - Accepts localStream for webcam/mic input
 //
-// The tokenProvider receives the app scope string from the SDK.
-// JWT is minted in Electron Main Process via IPC (keeps API key off renderer).
-// onResult receives WebRTC signaling: { type:"answer", sdp } / { type:"icecandidate" }
-// The RTCPeerConnection is managed here; Lucy streams video back via WebRTC.
+// tokenProvider calls Electron IPC → Main Process → rest.fal.ai/tokens/
 
 interface FalSession {
   close(): void;
   send(input: Record<string, unknown>): void;
-}
-
-interface RealtimeConn {
-  send(input: Record<string, unknown>): void;
-  close(): void;
 }
 
 async function startFalSession(
@@ -165,136 +157,58 @@ async function startFalSession(
 
   fal.config({ credentials: apiKey });
 
-  return new Promise<FalSession>((resolve, reject) => {
-    let pc: RTCPeerConnection | null = null;
-    let settled = false;
-    const pendingCandidates: RTCIceCandidateInit[] = [];
-    let hasRemoteDesc = false;
-    let conn: RealtimeConn | null = null;
+  const tokenProvider = async (app: string): Promise<string> => {
+    const api = (window as unknown as {
+      electronAPI?: { getFalToken?: (k: string, a: string) => Promise<string> }
+    }).electronAPI;
+    if (api?.getFalToken) return api.getFalToken(apiKey, app);
+    const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
+    const res = await fetch("https://rest.fal.ai/tokens/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Key ${rawKey}` },
+      body: JSON.stringify({ allowed_apps: [app], token_expiration: 10 }),
+    });
+    if (!res.ok) throw new Error(`fal token error (${res.status}): ${await res.text().catch(() => "")}`);
+    const raw = await res.text();
+    try {
+      const p = JSON.parse(raw);
+      if (typeof p === "string") return p;
+      if (p?.detail) return p.detail;
+      if (p?.token) return p.token;
+    } catch { /* plain text */ }
+    return raw.replace(/^"|"$/g, "").trim();
+  };
 
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        reject(new Error("fal.ai Lucy 2.5: connection timed out (30s)"));
-      }
-    }, 30_000);
-
-    conn = fal.realtime.connect("decart/lucy-2-5/realtime", {
-      // SDK calls tokenProvider(app) where app = "decart/lucy-2-5/realtime"
-      // We forward to Electron Main Process IPC which calls rest.fal.ai/tokens/
-      tokenProvider: async (app: string): Promise<string> => {
-        const api = (window as unknown as {
-          electronAPI?: { getFalToken?: (k: string, a: string) => Promise<string> }
-        }).electronAPI;
-        if (api?.getFalToken) return api.getFalToken(apiKey, app);
-        // Fallback: direct fetch (dev / non-Electron)
-        const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
-        const res = await fetch("https://rest.fal.ai/tokens/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Key ${rawKey}` },
-          body: JSON.stringify({ allowed_apps: [app], token_expiration: 10 }),
-        });
-        if (!res.ok) throw new Error(`fal token error (${res.status}): ${await res.text().catch(() => "")}`);
-        const raw = await res.text();
-        try {
-          const p = JSON.parse(raw);
-          if (typeof p === "string") return p;
-          if (p?.detail) return p.detail;
-          if (p?.token) return p.token;
-        } catch { /* plain text */ }
-        return raw.replace(/^"|"$/g, "").trim();
-      },
-      tokenExpirationSeconds: 10,
-
-      onResult: async (result: unknown) => {
-        const msg = result as Record<string, unknown>;
-        const type = (msg.type as string | undefined)?.toLowerCase();
-
-        // ── Server ready → build RTCPeerConnection ───────────────────────
-        if ((type === "ready" || type === "iceservers") && !pc) {
-          const iceServers = (
-            (msg.iceServers ?? msg.ice_servers ?? msg.iceservers) as RTCIceServer[] | undefined
-          ) ?? [{ urls: "stun:stun.l.google.com:19302" }];
-
-          pc = new RTCPeerConnection({ iceServers });
-          localStream.getTracks().forEach(t => pc!.addTrack(t, localStream));
-
-          pc.ontrack = (ev) => {
-            const stream = ev.streams[0] ?? new MediaStream([ev.track]);
-            onRemoteStream(stream);
-          };
-
-          pc.onicecandidate = (ev) => {
-            if (ev.candidate) {
-              conn?.send({
-                type: "icecandidate",
-                candidate: {
-                  candidate:     ev.candidate.candidate,
-                  sdpMid:        ev.candidate.sdpMid,
-                  sdpMLineIndex: ev.candidate.sdpMLineIndex,
-                },
-              });
-            }
-          };
-
-          pc.onconnectionstatechange = () => {
-            if (pc?.connectionState === "failed" || pc?.connectionState === "disconnected") {
-              onDisconnect();
-            }
-          };
-
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          conn?.send({ type: "offer", sdp: pc.localDescription!.sdp });
-        }
-
-        // ── SDP answer ────────────────────────────────────────────────────
-        else if (type === "answer" && typeof msg.sdp === "string" && pc && !hasRemoteDesc) {
-          await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: msg.sdp }));
-          hasRemoteDesc = true;
-          for (const c of pendingCandidates.splice(0)) {
-            if (c.candidate) await pc.addIceCandidate(new RTCIceCandidate(c));
-          }
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            // Send initial prompt
-            conn?.send({
-              prompt: initialPrompt,
-              ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
-            });
-            resolve({
-              close: () => { try { conn?.close(); } catch { /* ignore */ } try { pc?.close(); } catch { /* ignore */ } },
-              send:  (d) => conn?.send(d),
-            });
-          }
-        }
-
-        // ── ICE candidate from server ─────────────────────────────────────
-        else if (type === "icecandidate" && msg.candidate && pc) {
-          const c = msg.candidate as RTCIceCandidateInit;
-          if (!hasRemoteDesc) { pendingCandidates.push(c); }
-          else if (c.candidate) { await pc.addIceCandidate(new RTCIceCandidate(c)); }
-        }
-
-        // ── Error from server ─────────────────────────────────────────────
-        else if (type === "error") {
-          if (!settled) {
-            settled = true; clearTimeout(timeout);
-            reject(new Error(`Lucy error: ${msg.message ?? msg.error ?? JSON.stringify(msg)}`));
-          }
-        }
-      },
-
-      onError: (err: Error) => {
-        if (!settled) { settled = true; clearTimeout(timeout); reject(err); }
-        else onDisconnect();
-      },
-    }) as RealtimeConn;
-
-    // Per docs: connection.send({}) starts the WebRTC handshake
-    conn.send({});
+  // fal.realtime.open() with lucyRealtime() handles all WebRTC signaling
+  const managed = fal.realtime.open(lucyRealtime(), {
+    endpointId: "decart/lucy-2-5/realtime",
+    input: {
+      prompt: initialPrompt,
+      ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
+    },
+    localStream,
+    tokenProvider,
+    tokenExpirationSeconds: 10,
+    onMedia: (stream: MediaStream) => {
+      onRemoteStream(stream);
+    },
+    onState: (state: string) => {
+      if (state === "failed" || state === "closed") onDisconnect();
+    },
+    onError: (err: unknown) => {
+      console.error("Lucy error:", err);
+    },
   });
+
+  // Wait for the session to be live
+  const session = await managed.ready;
+
+  return {
+    close: () => { void managed.close(); },
+    send: (data: Record<string, unknown>) => {
+      if (session.session) session.session.send(data);
+    },
+  };
 }
 
 function sendPromptUpdate(session: FalSession, prompt: string, refImageB64?: string | null) {

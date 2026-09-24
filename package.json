@@ -1,6 +1,6 @@
 {
   "name": "stream-studio",
-  "version": "1.15.6",
+  "version": "1.15.7",
   "description": "Real-time AI webcam transformation powered by fal.ai Lucy 2.5",
   "main": "dist-electron/main.js",
   "author": "Rich Life Technologies",
@@ -18,7 +18,7 @@
     "dist:mac:intel": "npm run build && electron-builder --mac --x64"
   },
   "dependencies": {
-    "@fal-ai/client": "^1.4.0",
+    "@fal-ai/client": "1.11.0-alpha.4",
     "@radix-ui/react-dialog": "^1.1.4",
     "@radix-ui/react-dropdown-menu": "^2.1.4",
     "@radix-ui/react-label": "^2.1.1",
