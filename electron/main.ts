@@ -172,7 +172,7 @@ ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) =>
     },
     body: JSON.stringify({
       allowed_apps: [appId],
-      token_expiration: 10,
+      token_expiration: 120,
     }),
   });
   if (!res.ok) {

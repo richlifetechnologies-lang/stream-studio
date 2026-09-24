@@ -166,7 +166,7 @@ async function startFalSession(
     const res = await fetch("https://rest.fal.ai/tokens/", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Key ${rawKey}` },
-      body: JSON.stringify({ allowed_apps: [app], token_expiration: 10 }),
+      body: JSON.stringify({ allowed_apps: [app], token_expiration: 120 }),
     });
     if (!res.ok) throw new Error(`fal token error (${res.status}): ${await res.text().catch(() => "")}`);
     const raw = await res.text();
@@ -188,7 +188,7 @@ async function startFalSession(
     },
     localStream,
     tokenProvider,
-    tokenExpirationSeconds: 10,
+    tokenExpirationSeconds: 120,
     onMedia: (stream: MediaStream) => {
       onRemoteStream(stream);
     },
