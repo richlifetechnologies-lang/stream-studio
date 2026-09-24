@@ -160,15 +160,19 @@ async function startInAppDownload(win: BrowserWindow, overrideUrl?: string) {
 // The renderer asks for a short-lived JWT; we call fal's token endpoint here
 // where the API key never touches the renderer bundle.
 ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) => {
+  // Strip "Key " prefix if user accidentally stored it that way, then re-add it cleanly
+  const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
+  if (!rawKey) throw new Error("FAL_KEY is missing or empty");
+
   const res = await fetch("https://rest.fal.ai/tokens/", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Key ${apiKey}`,
+      "Authorization": `Key ${rawKey}`,
     },
     body: JSON.stringify({
       allowed_apps: [appId],
-      token_expiration: 120,
+      token_expiration: 60,
     }),
   });
   if (!res.ok) {
@@ -176,7 +180,6 @@ ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) =>
     throw new Error(`fal.ai token error (${res.status}): ${txt}`);
   }
   const data = await res.json();
-  // SDK source shows it can return a plain string or { detail: "..." }
   if (typeof data === "string") return data;
   if (data.detail) return data.detail;
   return JSON.stringify(data);
