@@ -10,10 +10,10 @@ import {
   Settings, Mic, Wifi, WifiOff,
 } from "lucide-react";
 
-// ─── fal.ai WMA bridge constants ─────────────────────────────────────────────
-const WMA_BASE   = "https://wma.fal.run";
-const APP_ID     = "decart/lucy-2-5/realtime";
-const HB_INTERVAL_MS = 5000; // heartbeat every 5 s
+// ─── fal.ai signaling constants ───────────────────────────────────────────────
+const FAL_APP_ID = "decart/lucy-2-5/realtime";
+const FAL_TOKEN_URL = "https://fal.run/token/grant";
+const FAL_WS_BASE   = "wss://fal.run";
 
 // ─── Style presets ────────────────────────────────────────────────────────────
 const STYLES = [
@@ -144,39 +144,43 @@ class AutoSyncEngine {
   getDestStream(): MediaStream | null { return this.dest?.stream ?? null; }
 }
 
-// ─── fal.ai WMA WebRTC engine ─────────────────────────────────────────────────
+// ─── fal.ai Lucy 2.5 WebRTC engine ────────────────────────────────────────────
 //
-// Flow:
-//  1. Create RTCPeerConnection (720p video send + audio send)
-//  2. Add local video (+ optionally audio) tracks
-//  3. Add a receive-only transceiver for the remote video
-//  4. Create SDP offer, wait for ICE gathering to finish (no trickle ICE)
-//  5. POST offer + app_id to wma.fal.run/session  → get SDP answer + session_id
-//  6. Set remote description
-//  7. ontrack fires with the AI output stream
-//  8. Send heartbeat every 5 s; stop heartbeat + close PC to end session
-//  9. Send prompt/reference-image updates via the data channel
+// Signaling flow (WebSocket-based, trickle ICE):
+//  1. POST FAL_TOKEN_URL with API key  → short-lived JWT
+//  2. Open WebSocket: wss://fal.run/<appId>?fal_jwt_token=<jwt>
+//  3. Wait for {type:"iceservers"} to get TURN/STUN config
+//  4. Create RTCPeerConnection, add local tracks, create offer
+//  5. Send {type:"offer", sdp:...} over WebSocket
+//  6. WebSocket delivers {type:"answer", sdp:...} → setRemoteDescription
+//  7. Exchange trickle ICE candidates over WebSocket
+//  8. ontrack fires with the AI output MediaStream
+//  9. Send prompt updates as {type:"update", prompt:..., reference_image_url:...}
+// 10. Close WebSocket + PeerConnection to end session
 
-interface WmaSession {
-  pc:          RTCPeerConnection;
-  sessionId:   string;
-  dataChannel: RTCDataChannel;
-  hbTimer:     ReturnType<typeof setInterval>;
+interface FalSession {
+  pc: RTCPeerConnection;
+  ws: WebSocket;
 }
 
-async function falIceGatheringComplete(pc: RTCPeerConnection): Promise<void> {
-  if (pc.iceGatheringState === "complete") return;
-  return new Promise((resolve) => {
-    const check = () => {
-      if (pc.iceGatheringState === "complete") {
-        pc.removeEventListener("icegatheringstatechange", check);
-        resolve();
-      }
-    };
-    pc.addEventListener("icegatheringstatechange", check);
-    // Safety timeout — resolve anyway after 4 s
-    setTimeout(resolve, 4000);
+const DEFAULT_ICE = [{ urls: "stun:stun.l.google.com:19302" }];
+
+async function falGetToken(apiKey: string): Promise<string> {
+  const res = await fetch(FAL_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Key ${apiKey}`,
+    },
+    body: JSON.stringify({ allowed_apps: [FAL_APP_ID], token_expiration_seconds: 120 }),
   });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`fal.ai auth failed (${res.status}): ${txt}`);
+  }
+  const data = await res.json();
+  // response is either a plain string or { token: "..." }
+  return typeof data === "string" ? data : (data.token ?? data.detail ?? data);
 }
 
 async function falStartSession(
@@ -186,91 +190,149 @@ async function falStartSession(
   onDisconnect: () => void,
   initialPrompt: string,
   refImageB64: string | null,
-): Promise<WmaSession> {
-  const pc = new RTCPeerConnection({
-    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-  });
+): Promise<FalSession> {
 
-  // Add local tracks (720p video already constrained at camera start)
-  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+  // 1. Get short-lived JWT
+  const token = await falGetToken(apiKey);
 
-  // Transceiver for receiving the remote video back
-  pc.addTransceiver("video", { direction: "recvonly" });
+  // 2. Open signaling WebSocket
+  const wsUrl = `${FAL_WS_BASE}/${FAL_APP_ID}?fal_jwt_token=${encodeURIComponent(token)}`;
+  const ws = new WebSocket(wsUrl);
 
-  // Data channel for sending prompt / image updates
-  const dc = pc.createDataChannel("control", { ordered: true });
-
-  // Collect remote stream
+  let pc: RTCPeerConnection | null = null;
   const remoteStream = new MediaStream();
-  pc.ontrack = (ev) => {
-    ev.streams[0]?.getTracks().forEach(t => remoteStream.addTrack(t));
-    if (remoteStream.getTracks().length > 0) onRemoteStream(remoteStream);
-  };
+  let offerSent = false;
 
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-      onDisconnect();
+  const sendWs = (payload: Record<string, unknown>) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(payload));
     }
   };
 
-  // Create offer and wait for full ICE gathering (wma bridge doesn't support trickle)
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  await falIceGatheringComplete(pc);
+  return new Promise<FalSession>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("fal.ai connection timed out (30s)"));
+      try { ws.close(); } catch { /* ignore */ }
+    }, 30_000);
 
-  const body = {
-    app_id: APP_ID,
-    offer: { sdp: pc.localDescription!.sdp, type: pc.localDescription!.type },
-  };
+    ws.onopen = () => {
+      // WebSocket is open; we wait for {type:"iceservers"} before creating the PC
+    };
 
-  const res = await fetch(`${WMA_BASE}/session`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Key ${apiKey}`,
-    },
-    body: JSON.stringify(body),
+    ws.onmessage = async (ev) => {
+      let msg: Record<string, unknown>;
+      try { msg = JSON.parse(ev.data as string); } catch { return; }
+
+      if (msg.type === "iceservers" && !offerSent) {
+        // 3. Got ICE servers → build RTCPeerConnection
+        const iceServers = Array.isArray(msg.iceservers) && (msg.iceservers as unknown[]).length > 0
+          ? (msg.iceservers as RTCIceServer[])
+          : DEFAULT_ICE;
+
+        pc = new RTCPeerConnection({ iceServers });
+
+        // Pipe local tracks (video + optional delayed-mic audio)
+        localStream.getTracks().forEach(t => pc!.addTrack(t, localStream));
+
+        // Collect incoming remote tracks into one MediaStream
+        pc.ontrack = (e) => {
+          const src = e.streams[0];
+          if (src) {
+            src.getTracks().forEach(t => {
+              if (!remoteStream.getTrackById(t.id)) remoteStream.addTrack(t);
+            });
+          } else {
+            if (!remoteStream.getTrackById(e.track.id)) remoteStream.addTrack(e.track);
+          }
+          if (remoteStream.getTracks().length > 0) onRemoteStream(remoteStream);
+        };
+
+        // Trickle ICE — send each candidate as it's gathered
+        pc.onicecandidate = (e) => {
+          if (e.candidate) {
+            sendWs({
+              type: "icecandidate",
+              candidate: {
+                candidate:     e.candidate.candidate,
+                sdpMid:        e.candidate.sdpMid,
+                sdpMLineIndex: e.candidate.sdpMLineIndex,
+              },
+            });
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (pc!.connectionState === "connected") {
+            clearTimeout(timeout);
+            // Send initial prompt immediately
+            sendWs({
+              type:   "update",
+              prompt: initialPrompt,
+              ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
+            });
+            resolve({ pc: pc!, ws });
+          }
+          if (pc!.connectionState === "failed" || pc!.connectionState === "disconnected") {
+            onDisconnect();
+          }
+        };
+
+        // 4 & 5. Create offer + send over WebSocket (trickle — send immediately)
+        offerSent = true;
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendWs({ type: "offer", sdp: pc.localDescription!.sdp });
+
+      } else if (msg.type === "answer" && typeof msg.sdp === "string" && pc) {
+        // 6. Set remote description
+        await pc.setRemoteDescription(
+          new RTCSessionDescription({ type: "answer", sdp: msg.sdp })
+        );
+
+      } else if (msg.type === "icecandidate" && pc) {
+        // 7. Add server ICE candidates
+        const c = msg.candidate as { candidate: string; sdpMid: string; sdpMLineIndex: number } | null;
+        if (c?.candidate) {
+          await pc.addIceCandidate(new RTCIceCandidate({
+            candidate:     c.candidate,
+            sdpMid:        c.sdpMid,
+            sdpMLineIndex: c.sdpMLineIndex,
+          }));
+        }
+
+      } else if (msg.type === "error") {
+        clearTimeout(timeout);
+        reject(new Error(`fal.ai error: ${msg.error ?? JSON.stringify(msg)}`));
+        try { ws.close(); } catch { /* ignore */ }
+      }
+    };
+
+    ws.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error("fal.ai WebSocket connection error"));
+    };
+
+    ws.onclose = (ev) => {
+      if (!offerSent) {
+        clearTimeout(timeout);
+        reject(new Error(`fal.ai WebSocket closed early (code ${ev.code})`));
+      }
+    };
   });
+}
 
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`fal.ai session failed (${res.status}): ${txt}`);
-  }
+function falEndSession(session: FalSession) {
+  try { session.ws.close(); }  catch { /* ignore */ }
+  try { session.pc.close(); }  catch { /* ignore */ }
+}
 
-  const data = await res.json() as { sdp: string; type: string; session_id?: string; id?: string };
-  const sessionId = data.session_id ?? data.id ?? "";
-
-  await pc.setRemoteDescription({ sdp: data.sdp, type: data.type as RTCSdpType });
-
-  // Send initial prompt once data channel is open
-  const sendInitial = () => {
-    const payload: Record<string, unknown> = { prompt: initialPrompt };
-    if (refImageB64) payload.reference_image_url = `data:image/jpeg;base64,${refImageB64}`;
-    dc.send(JSON.stringify(payload));
-  };
-
-  if (dc.readyState === "open") {
-    sendInitial();
-  } else {
-    dc.onopen = sendInitial;
-  }
-
-  // Heartbeat to keep session alive
-  const hbTimer = setInterval(async () => {
-    if (!sessionId) return;
-    try {
-      await fetch(`${WMA_BASE}/session/heartbeat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Key ${apiKey}`,
-        },
-        body: JSON.stringify({ session_id: sessionId }),
-      });
-    } catch { /* best-effort */ }
-  }, HB_INTERVAL_MS);
-
-  return { pc, sessionId, dataChannel: dc, hbTimer };
+function falSendPrompt(session: FalSession, prompt: string, refImageB64?: string | null) {
+  if (session.ws.readyState !== WebSocket.OPEN) return;
+  session.ws.send(JSON.stringify({
+    type:   "update",
+    prompt,
+    ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
+  }));
 }
 
 function falEndSession(session: WmaSession) {
@@ -327,7 +389,7 @@ export default function StreamPage() {
   const localVideoRef   = useRef<HTMLVideoElement>(null);
   const remoteVideoRef  = useRef<HTMLVideoElement>(null);
   const localStreamRef  = useRef<MediaStream|null>(null);
-  const falSessionRef   = useRef<WmaSession|null>(null);
+  const falSessionRef   = useRef<FalSession|null>(null);
   const syncEngineRef   = useRef<AutoSyncEngine|null>(null);
   const timerRef        = useRef<ReturnType<typeof setInterval>|null>(null);
   const popoutRef       = useRef<Window|null>(null);

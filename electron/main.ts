@@ -216,7 +216,7 @@ function createWindow() {
       responseHeaders: {
         ...details.responseHeaders,
         "Content-Security-Policy": [
-          "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://*.fal.ai wss://*.fal.ai https://wma.fal.run https://fal.run https://*.fal.run https://fonts.googleapis.com https://fonts.gstatic.com; media-src *; connect-src *;",
+          "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://*.fal.ai wss://*.fal.ai https://wma.fal.run https://fal.run wss://fal.run https://*.fal.run wss://*.fal.run https://fonts.googleapis.com https://fonts.gstatic.com; media-src *; connect-src *;",
         ],
       },
     });
