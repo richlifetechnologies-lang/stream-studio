@@ -158,15 +158,18 @@ async function startFalSession(
   fal.config({ credentials: apiKey });
 
   const tokenProvider = async (app: string): Promise<string> => {
+    // The fal token server validates scope against the app alias only (not full path)
+    // SDK default uses parseEndpointId(app).alias = "lucy-2-5" for "decart/lucy-2-5/realtime"
+    const alias = app.split("/")[1] ?? app; // "decart/lucy-2-5/realtime" -> "lucy-2-5"
     const api = (window as unknown as {
       electronAPI?: { getFalToken?: (k: string, a: string) => Promise<string> }
     }).electronAPI;
-    if (api?.getFalToken) return api.getFalToken(apiKey, app);
+    if (api?.getFalToken) return api.getFalToken(apiKey, alias);
     const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
     const res = await fetch("https://rest.fal.ai/tokens/", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Key ${rawKey}` },
-      body: JSON.stringify({ allowed_apps: [app], token_expiration: 120 }),
+      body: JSON.stringify({ allowed_apps: [alias], token_expiration: 120 }),
     });
     if (!res.ok) throw new Error(`fal token error (${res.status}): ${await res.text().catch(() => "")}`);
     const raw = await res.text();

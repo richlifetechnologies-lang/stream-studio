@@ -164,6 +164,8 @@ ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) =>
   const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
   if (!rawKey) throw new Error("FAL_KEY is missing or empty");
 
+  // The token server validates scope against the alias only (e.g. "lucy-2-5" not "decart/lucy-2-5/realtime")
+  // appId is already the alias when called from our tokenProvider
   const res = await fetch("https://rest.fal.ai/tokens/", {
     method: "POST",
     headers: {
