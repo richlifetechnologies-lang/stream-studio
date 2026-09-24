@@ -156,6 +156,32 @@ async function startInAppDownload(win: BrowserWindow, overrideUrl?: string) {
   }
 }
 
+// ─── IPC: fal.ai token mint (keeps API key in Main Process) ──────────────────
+// The renderer asks for a short-lived JWT; we call fal's token endpoint here
+// where the API key never touches the renderer bundle.
+ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) => {
+  const res = await fetch("https://rest.fal.ai/tokens/", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Key ${apiKey}`,
+    },
+    body: JSON.stringify({
+      allowed_apps: [appId],
+      token_expiration: 120,
+    }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`fal.ai token error (${res.status}): ${txt}`);
+  }
+  const data = await res.json();
+  // SDK source shows it can return a plain string or { detail: "..." }
+  if (typeof data === "string") return data;
+  if (data.detail) return data.detail;
+  return JSON.stringify(data);
+});
+
 // ─── IPC: trigger update download ────────────────────────────────────────────
 ipcMain.on("download-update", () => {
   if (mainWindow) startInAppDownload(mainWindow);

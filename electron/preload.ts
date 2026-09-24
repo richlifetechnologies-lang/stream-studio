@@ -31,4 +31,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   quitAndInstall: () => {
     ipcRenderer.send("quit-and-install");
   },
+
+  // Mint a short-lived fal.ai JWT in the Main Process (keeps API key off renderer)
+  getFalToken: (apiKey: string, appId: string): Promise<string> => {
+    return ipcRenderer.invoke("get-fal-token", apiKey, appId);
+  },
 });

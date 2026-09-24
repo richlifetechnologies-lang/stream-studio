@@ -198,17 +198,15 @@ async function startFalSession(
       pc.close();
     }, 30_000);
 
-    // Connect via fal.ai realtime SDK — it handles JWT token internally
+    // Connect via fal.ai realtime SDK with IPC token provider
     const connection = fal.realtime.connect("decart/lucy-2-5/realtime", {
       onResult: async (result: Record<string, unknown>) => {
         try {
           if (result.type === "answer" && typeof result.sdp === "string") {
-            // Apply the SDP answer from Lucy 2.5
             await pc.setRemoteDescription(
               new RTCSessionDescription({ type: "answer", sdp: result.sdp })
             );
           } else if (result.type === "icecandidate" && result.candidate) {
-            // Add ICE candidate from server
             const c = result.candidate as RTCIceCandidateInit;
             if (c.candidate) await pc.addIceCandidate(new RTCIceCandidate(c));
           }
@@ -220,6 +218,25 @@ async function startFalSession(
         clearTimeout(timeout);
         reject(err);
       },
+      // Token minted in Electron Main Process via IPC — API key never in renderer
+      tokenProvider: async (app: string) => {
+        if (window.electronAPI?.getFalToken) {
+          return window.electronAPI.getFalToken(apiKey, app);
+        }
+        // Fallback for non-Electron / dev browser context
+        const res = await fetch("https://rest.fal.ai/tokens/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Key ${apiKey}`,
+          },
+          body: JSON.stringify({ allowed_apps: [app], token_expiration: 120 }),
+        });
+        if (!res.ok) throw new Error(`fal.ai token error (${res.status})`);
+        const data = await res.json();
+        return typeof data === "string" ? data : (data.detail ?? JSON.stringify(data));
+      },
+      tokenExpirationSeconds: 120,
     } as Parameters<typeof fal.realtime.connect>[1]) as FalRealtimeConnection;
 
     // Trickle ICE — forward our candidates to the server
