@@ -147,6 +147,8 @@ interface FalSession {
 
 const FAL_APP_ID = "decart/lucy-2-5/realtime";
 const FAL_TOKEN_URL = "https://rest.fal.ai/tokens/";
+// The WS URL appends /realtime path — app already ends in /realtime so the
+// token scope and WS path are both just the app id with no extra suffix
 const FAL_WS_URL = `wss://fal.run/${FAL_APP_ID}`;
 
 async function getFalToken(apiKey: string): Promise<string> {

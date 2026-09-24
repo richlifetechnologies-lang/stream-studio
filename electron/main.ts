@@ -179,10 +179,20 @@ ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) =>
     const txt = await res.text().catch(() => "");
     throw new Error(`fal.ai token error (${res.status}): ${txt}`);
   }
-  const data = await res.json();
-  if (typeof data === "string") return data;
-  if (data.detail) return data.detail;
-  return JSON.stringify(data);
+  // The tokens endpoint returns either a plain string token or a JSON object
+  const raw = await res.text();
+  try {
+    const parsed = JSON.parse(raw);
+    // Could be { detail: "token..." } or just the token string wrapped in JSON
+    if (typeof parsed === "string") return parsed;
+    if (parsed && typeof parsed.detail === "string") return parsed.detail;
+    if (parsed && typeof parsed.token === "string") return parsed.token;
+    // If it's some other object, stringify is wrong — return raw text
+    return raw.replace(/^"|"$/g, ""); // strip quotes if it was a quoted string
+  } catch {
+    // Response was plain text token
+    return raw.trim();
+  }
 });
 
 // ─── IPC: trigger update download ────────────────────────────────────────────
