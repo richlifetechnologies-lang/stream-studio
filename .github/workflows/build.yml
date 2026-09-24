@@ -94,7 +94,13 @@ jobs:
           body: |
             ## Stream Studio ${{ inputs.release_tag || github.ref_name }}
 
-            Real-time AI webcam transformation powered by Decart Lucy 2.1.
+            Real-time AI webcam transformation powered by **fal.ai Lucy 2.5** via WebRTC.
+
+            ### What's new
+            - 🔄 Switched engine from Decart 2.1 SDK → **fal.ai Lucy 2.5** (WebRTC, `decart/lucy-2-5/realtime`)
+            - 🎤 Microphone audio is pipelined alongside video in the same WebRTC connection for native lip sync
+            - 🔑 Single fal.ai API Key — get one at [fal.ai/dashboard/keys](https://fal.ai/dashboard/keys)
+            - 📡 720p webcam stream at 30fps
 
             ### Downloads
             | Platform | File |

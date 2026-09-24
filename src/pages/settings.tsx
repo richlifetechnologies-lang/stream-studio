@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { AppLayout } from "../components/layout";
-import { Key, Shield, Trash2, Eye, EyeOff, Save, LogOut, CheckCircle2 } from "lucide-react";
-import { getApiKey, getSecretKey, setApiKey, setSecretKey, clearCredentials } from "../lib/credentials";
+import { Key, Trash2, Eye, EyeOff, Save, LogOut, CheckCircle2, ExternalLink } from "lucide-react";
+import { getApiKey, setApiKey, clearCredentials } from "../lib/credentials";
 import { useToast } from "../hooks/use-toast";
 
 const C = "hsl(187 100% 52%)";
@@ -13,33 +13,33 @@ export default function SettingsPage() {
   const { toast } = useToast();
 
   const [newApiKey, setNewApiKey] = useState("");
-  const [newSecretKey, setNewSecretKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
-  const [showSecretKey, setShowSecretKey] = useState(false);
   const [saved, setSaved] = useState(false);
 
   const currentApiKey = getApiKey() ?? "";
-  const currentSecretKey = getSecretKey() ?? "";
-  const maskedApi = currentApiKey ? currentApiKey.slice(0, 6) + "••••••••" + currentApiKey.slice(-4) : "Not set";
-  const maskedSecret = currentSecretKey ? currentSecretKey.slice(0, 6) + "••••••••" + currentSecretKey.slice(-4) : "Not set";
+  const maskedApi = currentApiKey
+    ? currentApiKey.slice(0, 6) + "••••••••" + currentApiKey.slice(-4)
+    : "Not set";
 
   const handleUpdate = () => {
     const ak = newApiKey.trim();
-    const sk = newSecretKey.trim();
-    if (!ak && !sk) {
-      toast({ title: "Nothing to update", description: "Enter a new API Key or Secret Key to update.", variant: "destructive" });
+    if (!ak) {
+      toast({ title: "Nothing to update", description: "Enter your fal.ai API Key to save.", variant: "destructive" });
       return;
     }
-    if (ak) { if (ak.length < 8) { toast({ title: "API Key too short", variant: "destructive" }); return; } setApiKey(ak); }
-    if (sk) { if (sk.length < 8) { toast({ title: "Secret Key too short", variant: "destructive" }); return; } setSecretKey(sk); }
-    setNewApiKey(""); setNewSecretKey("");
+    if (ak.length < 8) {
+      toast({ title: "API Key too short", variant: "destructive" });
+      return;
+    }
+    setApiKey(ak);
+    setNewApiKey("");
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
-    toast({ title: "Credentials updated", description: "Your keys have been saved to this device." });
+    toast({ title: "API Key saved", description: "Your fal.ai key has been saved to this device." });
   };
 
   const handleClear = () => {
-    if (!confirm("This will remove your API Key and Secret Key from this device. Continue?")) return;
+    if (!confirm("This will remove your fal.ai API Key from this device. Continue?")) return;
     clearCredentials();
     setLocation("/");
   };
@@ -65,100 +65,88 @@ export default function SettingsPage() {
             Account Settings
           </h1>
           <p style={{ color: "hsl(222 25% 50%)", fontSize: 14, fontFamily: "'Rajdhani', sans-serif" }}>
-            Manage your API Key and Secret Key stored on this device
+            Manage your fal.ai API Key stored on this device
           </p>
         </div>
 
-        {/* Current keys display */}
+        {/* Get API key link */}
+        <div style={{ background: "hsl(187 100% 52% / 0.06)", border: "1px solid hsl(187 100% 52% / 0.2)", borderRadius: 12, padding: "12px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
+          <Key style={{ width: 15, height: 15, color: C, flexShrink: 0 }} />
+          <p style={{ fontSize: 13, color: "hsl(190 80% 80%)", fontFamily: "'Rajdhani', sans-serif", flex: 1 }}>
+            Don't have a key yet? Get one free at{" "}
+            <a
+              href="https://fal.ai/dashboard/keys"
+              target="_blank"
+              rel="noreferrer"
+              style={{ color: C, fontWeight: 700, textDecoration: "none" }}
+            >
+              fal.ai/dashboard/keys
+            </a>
+          </p>
+          <ExternalLink style={{ width: 13, height: 13, color: C, flexShrink: 0 }} />
+        </div>
+
+        {/* Current key display */}
         <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 20, marginBottom: 14 }}>
           <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron', monospace", marginBottom: 14 }}>
-            Current Credentials
+            Current Key
           </p>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "hsl(222 40% 8%)", borderRadius: 8, border: "1px solid hsl(222 40% 12%)" }}>
-              <Key style={{ width: 14, height: 14, color: C, flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontSize: 10, color: "hsl(222 25% 45%)", fontFamily: "'Orbitron', monospace", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>API Key</p>
-                <p style={{ fontSize: 13, color: "hsl(190 80% 90%)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{maskedApi}</p>
-              </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "hsl(222 40% 8%)", borderRadius: 8, border: "1px solid hsl(222 40% 12%)" }}>
-              <Shield style={{ width: 14, height: 14, color: C, flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontSize: 10, color: "hsl(222 25% 45%)", fontFamily: "'Orbitron', monospace", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>Secret Key</p>
-                <p style={{ fontSize: 13, color: "hsl(190 80% 90%)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{maskedSecret}</p>
-              </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "hsl(222 40% 8%)", borderRadius: 8, border: "1px solid hsl(222 40% 12%)" }}>
+            <Key style={{ width: 14, height: 14, color: C, flexShrink: 0 }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 10, color: "hsl(222 25% 45%)", fontFamily: "'Orbitron', monospace", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>fal.ai API Key</p>
+              <p style={{ fontSize: 13, color: "hsl(190 80% 90%)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{maskedApi}</p>
             </div>
           </div>
         </div>
 
-        {/* Update keys */}
+        {/* Update key */}
         <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 20, marginBottom: 14 }}>
           <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron', monospace", marginBottom: 16 }}>
-            Update Credentials
+            {currentApiKey ? "Update Key" : "Add Key"}
           </p>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* New API Key */}
             <div>
-              <label style={labelStyle}>New API Key</label>
+              <label style={labelStyle}>fal.ai API Key</label>
               <div style={{ position: "relative" }}>
                 <Key style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "hsl(222 25% 40%)" }} />
                 <input
                   type={showApiKey ? "text" : "password"}
                   value={newApiKey}
                   onChange={e => setNewApiKey(e.target.value)}
-                  placeholder="Enter new API Key"
+                  onKeyDown={e => { if (e.key === "Enter") handleUpdate(); }}
+                  placeholder="Enter your fal.ai API Key"
                   style={inputStyle}
                   onFocus={e => { e.target.style.borderColor = "hsl(187 100% 52% / 0.5)"; e.target.style.boxShadow = "0 0 0 2px hsl(187 100% 52% / 0.1)"; }}
                   onBlur={e => { e.target.style.borderColor = "hsl(222 40% 14%)"; e.target.style.boxShadow = "none"; }}
                 />
-                <button type="button" onClick={() => setShowApiKey(v => !v)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "hsl(222 25% 45%)", padding: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(v => !v)}
+                  style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "hsl(222 25% 45%)", padding: 4 }}
+                >
                   {showApiKey ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
                 </button>
               </div>
             </div>
 
-            {/* New Secret Key */}
-            <div>
-              <label style={labelStyle}>New Secret Key</label>
-              <div style={{ position: "relative" }}>
-                <Shield style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "hsl(222 25% 40%)" }} />
-                <input
-                  type={showSecretKey ? "text" : "password"}
-                  value={newSecretKey}
-                  onChange={e => setNewSecretKey(e.target.value)}
-                  placeholder="Enter new Secret Key"
-                  style={inputStyle}
-                  onFocus={e => { e.target.style.borderColor = "hsl(187 100% 52% / 0.5)"; e.target.style.boxShadow = "0 0 0 2px hsl(187 100% 52% / 0.1)"; }}
-                  onBlur={e => { e.target.style.borderColor = "hsl(222 40% 14%)"; e.target.style.boxShadow = "none"; }}
-                />
-                <button type="button" onClick={() => setShowSecretKey(v => !v)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "hsl(222 25% 45%)", padding: 4 }}>
-                  {showSecretKey ? <EyeOff style={{ width: 13, height: 13 }} /> : <Eye style={{ width: 13, height: 13 }} />}
-                </button>
-              </div>
-            </div>
-
-            <p style={{ fontSize: 11, color: "hsl(222 25% 40%)", fontFamily: "'Rajdhani', sans-serif" }}>
-              Leave a field blank to keep its current value unchanged.
-            </p>
-
             <button
               onClick={handleUpdate}
-              disabled={!newApiKey.trim() && !newSecretKey.trim()}
+              disabled={!newApiKey.trim()}
               style={{
                 display: "flex", alignItems: "center", gap: 6,
                 padding: "10px 18px", borderRadius: 8, width: "fit-content",
-                background: (!newApiKey.trim() && !newSecretKey.trim()) ? "hsl(222 40% 11%)" : saved ? "hsl(143 72% 35%)" : C,
+                background: !newApiKey.trim() ? "hsl(222 40% 11%)" : saved ? "hsl(143 72% 35%)" : C,
                 border: "none",
-                cursor: (!newApiKey.trim() && !newSecretKey.trim()) ? "not-allowed" : "pointer",
-                color: (!newApiKey.trim() && !newSecretKey.trim()) ? "hsl(222 25% 35%)" : "hsl(222 47% 4%)",
+                cursor: !newApiKey.trim() ? "not-allowed" : "pointer",
+                color: !newApiKey.trim() ? "hsl(222 25% 35%)" : "hsl(222 47% 4%)",
                 fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani', sans-serif",
                 transition: "all 0.2s",
               }}
             >
               {saved ? <CheckCircle2 style={{ width: 14, height: 14 }} /> : <Save style={{ width: 14, height: 14 }} />}
-              {saved ? "Saved!" : "Update Keys"}
+              {saved ? "Saved!" : "Save Key"}
             </button>
           </div>
         </div>
@@ -170,7 +158,7 @@ export default function SettingsPage() {
             <p style={{ fontWeight: 700, fontSize: 14, color: "hsl(0 85% 75%)", fontFamily: "'Rajdhani', sans-serif" }}>Danger Zone</p>
           </div>
           <p style={{ fontSize: 13, color: "hsl(0 50% 60%)", marginBottom: 14, fontFamily: "'Rajdhani', sans-serif", lineHeight: 1.5 }}>
-            Remove your API Key and Secret Key from this device. You will need to re-enter them in Settings to start streaming.
+            Remove your fal.ai API Key from this device. You'll need to re-enter it to start streaming.
           </p>
           <button
             onClick={handleClear}
@@ -185,7 +173,7 @@ export default function SettingsPage() {
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.2)"; }}
           >
             <LogOut style={{ width: 13, height: 13 }} />
-            Remove Keys &amp; Log Out
+            Remove Key &amp; Log Out
           </button>
         </div>
       </div>

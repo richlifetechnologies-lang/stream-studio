@@ -10,17 +10,12 @@ import {
   Settings, Mic, Wifi, WifiOff,
 } from "lucide-react";
 
-import type { createDecartClient as CreateDecartClient, models as ModelsType, RealTimeClient } from "@decartai/sdk";
+// ─── fal.ai WMA bridge constants ─────────────────────────────────────────────
+const WMA_BASE   = "https://wma.fal.run";
+const APP_ID     = "decart/lucy-2-5/realtime";
+const HB_INTERVAL_MS = 5000; // heartbeat every 5 s
 
-let _sdkCache: unknown = null;
-async function getDecartSdk(): Promise<{
-  createDecartClient: typeof CreateDecartClient;
-  models: typeof ModelsType;
-}> {
-  if (!_sdkCache) _sdkCache = await import("@decartai/sdk");
-  return _sdkCache as { createDecartClient: typeof CreateDecartClient; models: typeof ModelsType };
-}
-
+// ─── Style presets ────────────────────────────────────────────────────────────
 const STYLES = [
   { id: "hyper-real",  label: "HYPER-REAL",  color: "#00d2d3", prompt: "photorealistic human, ultra-high-definition, natural skin texture, cinematic lighting, professional photography" },
   { id: "anime",       label: "ANIME",        color: "#a29bfe", prompt: "anime art style, cel shading, vibrant colors, clean lines, studio animation quality" },
@@ -40,11 +35,12 @@ function formatTime(s: number) {
 
 const C = "hsl(187 100% 52%)";
 
-const WINDOW_MS  = 60;
-const BUF_SECS   = 6;
-const BUF_LEN    = Math.round((BUF_SECS * 1000) / WINDOW_MS);
-const MAX_DELAY  = 4.0;
-const MIN_DELAY  = 0.2;
+// ─── Audio/Video sync engine ──────────────────────────────────────────────────
+const WINDOW_MS = 60;
+const BUF_SECS  = 6;
+const BUF_LEN   = Math.round((BUF_SECS * 1000) / WINDOW_MS);
+const MAX_DELAY = 4.0;
+const MIN_DELAY = 0.2;
 
 class AutoSyncEngine {
   private audioCtx:   AudioContext | null = null;
@@ -69,11 +65,11 @@ class AutoSyncEngine {
     this.videoEl = videoEl;
     try {
       const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      const ctx = new AudioContext();
-      const src = ctx.createMediaStreamSource(mic);
+      const ctx  = new AudioContext();
+      const src  = ctx.createMediaStreamSource(mic);
       const analyser = ctx.createAnalyser(); analyser.fftSize = 512;
-      this.freqData = new Uint8Array(analyser.frequencyBinCount);
-      const delay = ctx.createDelay(MAX_DELAY + 0.5);
+      this.freqData  = new Uint8Array(analyser.frequencyBinCount);
+      const delay    = ctx.createDelay(MAX_DELAY + 0.5);
       delay.delayTime.value = this.detectedDelay;
       const gain = ctx.createGain(); gain.gain.value = 1.0;
       const dest = ctx.createMediaStreamDestination();
@@ -81,14 +77,11 @@ class AutoSyncEngine {
       analyser.connect(delay);
       delay.connect(gain);
       gain.connect(dest);
-
       this.audioCtx = ctx; this.analyser = analyser;
       this.delayNode = delay; this.gainNode = gain; this.dest = dest;
-
       this.offCanvas = new OffscreenCanvas(80, 45);
-      this.offCtx = this.offCanvas.getContext("2d")!;
-
-      this.timer = setInterval(() => this._tick(), WINDOW_MS);
+      this.offCtx    = this.offCanvas.getContext("2d")!;
+      this.timer     = setInterval(() => this._tick(), WINDOW_MS);
       return dest;
     } catch {
       return null;
@@ -97,7 +90,6 @@ class AutoSyncEngine {
 
   private _tick() {
     if (!this.analyser || !this.videoEl) return;
-
     this.analyser.getByteFrequencyData(this.freqData);
     const rms = Math.sqrt(this.freqData.reduce((s, v) => s + v * v, 0) / this.freqData.length) / 128;
     this.vuLevel = Math.min(100, rms * 100);
@@ -110,14 +102,14 @@ class AutoSyncEngine {
         if (this.prevPixels) {
           let sum = 0;
           for (let i = 0; i < frame.data.length; i += 4) {
-            sum += Math.abs(frame.data[i] - this.prevPixels[i])
+            sum += Math.abs(frame.data[i]   - this.prevPixels[i])
                  + Math.abs(frame.data[i+1] - this.prevPixels[i+1])
                  + Math.abs(frame.data[i+2] - this.prevPixels[i+2]);
           }
           vDelta = sum / (frame.data.length * 0.75 * 255);
         }
         this.prevPixels = new Uint8ClampedArray(frame.data);
-      } catch { /* cross-origin or not ready */ }
+      } catch { /* cross-origin / not ready */ }
     }
 
     this.audioSig.push(rms);
@@ -128,21 +120,16 @@ class AutoSyncEngine {
     if (this.audioSig.length === BUF_LEN && this.audioSig.length % 50 === 0) {
       const maxLagSamples = Math.round((MAX_DELAY * 1000) / WINDOW_MS);
       let bestLag = 0, bestCorr = -Infinity;
-
       for (let lag = 1; lag <= maxLagSamples; lag++) {
         let corr = 0;
         const n = BUF_LEN - lag;
-        for (let i = 0; i < n; i++) {
-          corr += this.audioSig[i] * this.videoSig[i + lag];
-        }
+        for (let i = 0; i < n; i++) corr += this.audioSig[i] * this.videoSig[i + lag];
         if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
       }
-
       const newDelay = Math.max(MIN_DELAY, Math.min(MAX_DELAY, bestLag * WINDOW_MS / 1000));
       this.detectedDelay = 0.8 * this.detectedDelay + 0.2 * newDelay;
       if (this.delayNode) this.delayNode.delayTime.value = this.detectedDelay;
     }
-
     this.onUpdate?.(this.detectedDelay, this.vuLevel);
   }
 
@@ -154,23 +141,160 @@ class AutoSyncEngine {
     this.prevPixels = null;
   }
 
-  getDestStream(): MediaStream | null {
-    return this.dest?.stream ?? null;
+  getDestStream(): MediaStream | null { return this.dest?.stream ?? null; }
+}
+
+// ─── fal.ai WMA WebRTC engine ─────────────────────────────────────────────────
+//
+// Flow:
+//  1. Create RTCPeerConnection (720p video send + audio send)
+//  2. Add local video (+ optionally audio) tracks
+//  3. Add a receive-only transceiver for the remote video
+//  4. Create SDP offer, wait for ICE gathering to finish (no trickle ICE)
+//  5. POST offer + app_id to wma.fal.run/session  → get SDP answer + session_id
+//  6. Set remote description
+//  7. ontrack fires with the AI output stream
+//  8. Send heartbeat every 5 s; stop heartbeat + close PC to end session
+//  9. Send prompt/reference-image updates via the data channel
+
+interface WmaSession {
+  pc:          RTCPeerConnection;
+  sessionId:   string;
+  dataChannel: RTCDataChannel;
+  hbTimer:     ReturnType<typeof setInterval>;
+}
+
+async function falIceGatheringComplete(pc: RTCPeerConnection): Promise<void> {
+  if (pc.iceGatheringState === "complete") return;
+  return new Promise((resolve) => {
+    const check = () => {
+      if (pc.iceGatheringState === "complete") {
+        pc.removeEventListener("icegatheringstatechange", check);
+        resolve();
+      }
+    };
+    pc.addEventListener("icegatheringstatechange", check);
+    // Safety timeout — resolve anyway after 4 s
+    setTimeout(resolve, 4000);
+  });
+}
+
+async function falStartSession(
+  apiKey: string,
+  localStream: MediaStream,
+  onRemoteStream: (s: MediaStream) => void,
+  onDisconnect: () => void,
+  initialPrompt: string,
+  refImageB64: string | null,
+): Promise<WmaSession> {
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  });
+
+  // Add local tracks (720p video already constrained at camera start)
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+  // Transceiver for receiving the remote video back
+  pc.addTransceiver("video", { direction: "recvonly" });
+
+  // Data channel for sending prompt / image updates
+  const dc = pc.createDataChannel("control", { ordered: true });
+
+  // Collect remote stream
+  const remoteStream = new MediaStream();
+  pc.ontrack = (ev) => {
+    ev.streams[0]?.getTracks().forEach(t => remoteStream.addTrack(t));
+    if (remoteStream.getTracks().length > 0) onRemoteStream(remoteStream);
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      onDisconnect();
+    }
+  };
+
+  // Create offer and wait for full ICE gathering (wma bridge doesn't support trickle)
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await falIceGatheringComplete(pc);
+
+  const body = {
+    app_id: APP_ID,
+    offer: { sdp: pc.localDescription!.sdp, type: pc.localDescription!.type },
+  };
+
+  const res = await fetch(`${WMA_BASE}/session`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Key ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`fal.ai session failed (${res.status}): ${txt}`);
   }
+
+  const data = await res.json() as { sdp: string; type: string; session_id?: string; id?: string };
+  const sessionId = data.session_id ?? data.id ?? "";
+
+  await pc.setRemoteDescription({ sdp: data.sdp, type: data.type as RTCSdpType });
+
+  // Send initial prompt once data channel is open
+  const sendInitial = () => {
+    const payload: Record<string, unknown> = { prompt: initialPrompt };
+    if (refImageB64) payload.reference_image_url = `data:image/jpeg;base64,${refImageB64}`;
+    dc.send(JSON.stringify(payload));
+  };
+
+  if (dc.readyState === "open") {
+    sendInitial();
+  } else {
+    dc.onopen = sendInitial;
+  }
+
+  // Heartbeat to keep session alive
+  const hbTimer = setInterval(async () => {
+    if (!sessionId) return;
+    try {
+      await fetch(`${WMA_BASE}/session/heartbeat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Key ${apiKey}`,
+        },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+    } catch { /* best-effort */ }
+  }, HB_INTERVAL_MS);
+
+  return { pc, sessionId, dataChannel: dc, hbTimer };
 }
 
-// ─── Helper: get the base URL without any hash, for building popup URLs ───────
-function getBaseUrl(): string {
-  return window.location.href.split("#")[0];
+function falEndSession(session: WmaSession) {
+  clearInterval(session.hbTimer);
+  try { session.dataChannel.close(); } catch { /* ignore */ }
+  try { session.pc.close(); } catch { /* ignore */ }
 }
 
-// ─── Helper: notify a popup window that a stream is ready (trigger only) ──────
+function falSendPrompt(session: WmaSession, prompt: string, refImageB64?: string | null) {
+  if (session.dataChannel.readyState !== "open") return;
+  const payload: Record<string, unknown> = { prompt };
+  if (refImageB64) payload.reference_image_url = `data:image/jpeg;base64,${refImageB64}`;
+  session.dataChannel.send(JSON.stringify(payload));
+}
+
+// ─── Popup helpers ────────────────────────────────────────────────────────────
+function getBaseUrl(): string { return window.location.href.split("#")[0]; }
 function notifyPopup(w: Window | null) {
   if (w && !w.closed) {
     try { w.postMessage({ type: "stream-studio-stream" }, "*"); } catch { /* ignore */ }
   }
 }
 
+// ─── Main component ───────────────────────────────────────────────────────────
 export default function StreamPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
@@ -203,7 +327,7 @@ export default function StreamPage() {
   const localVideoRef   = useRef<HTMLVideoElement>(null);
   const remoteVideoRef  = useRef<HTMLVideoElement>(null);
   const localStreamRef  = useRef<MediaStream|null>(null);
-  const decartRef       = useRef<RealTimeClient|null>(null);
+  const falSessionRef   = useRef<WmaSession|null>(null);
   const syncEngineRef   = useRef<AutoSyncEngine|null>(null);
   const timerRef        = useRef<ReturnType<typeof setInterval>|null>(null);
   const popoutRef       = useRef<Window|null>(null);
@@ -217,7 +341,7 @@ export default function StreamPage() {
   const enumerateCameras = useCallback(async () => {
     try {
       const devs = await navigator.mediaDevices.enumerateDevices();
-      const vids = devs.filter(d => d.kind === "videoinput");
+      const vids  = devs.filter(d => d.kind === "videoinput");
       setCameras(vids);
       if (vids.length && !selectedCameraId) setSelectedCameraId(vids[0].deviceId);
     } catch { /* ignore */ }
@@ -232,7 +356,7 @@ export default function StreamPage() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: id
           ? { deviceId: { exact: id }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
-          : { width: { ideal: 1280 }, height: { ideal: 720 } },
+          : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
         audio: false,
       });
       localStreamRef.current = stream;
@@ -253,17 +377,19 @@ export default function StreamPage() {
   const teardownStream = useCallback(async () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     isStartingRef.current = false;
-    try { await decartRef.current?.disconnect(); } catch { /* ignore */ }
-    decartRef.current = null;
+
+    if (falSessionRef.current) {
+      falEndSession(falSessionRef.current);
+      falSessionRef.current = null;
+    }
+
     syncEngineRef.current?.stop();
     syncEngineRef.current = null;
+
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     remoteStreamRef.current = null;
-
-    // Clear the globally shared stream reference
     window.__ssRemoteStream = null;
 
-    // Notify all popup windows to clear
     if (popoutRef.current && !popoutRef.current.closed) {
       try { popoutRef.current.postMessage("stream-studio-clear", "*"); } catch { /* ignore */ }
     }
@@ -280,67 +406,65 @@ export default function StreamPage() {
   // ─── Start stream ─────────────────────────────────────────────────────────
   const handleStartStream = useCallback(async () => {
     if (isStartingRef.current || isStreaming) return;
-    if (credsMissing) {
-      setLocation("/settings");
+    if (credsMissing) { setLocation("/settings"); return; }
+    if (!cameraReady || !localStreamRef.current) {
+      toast({ title: "Camera not ready", description: "Enable your camera first.", variant: "destructive" });
       return;
     }
-    if (!cameraReady || !localStreamRef.current) {
-      toast({ title: "Camera not ready", description: "Enable your camera first.", variant: "destructive" }); return;
-    }
-    const apiKey = getApiKey()!;
 
-    isStartingRef.current = true; setIsStarting(true);
-    setConnectionStep("auth"); setConnectionStatus("connecting");
+    const apiKey = getApiKey()!;
+    isStartingRef.current = true;
+    setIsStarting(true);
+    setConnectionStep("auth");
+    setConnectionStatus("connecting");
 
     try {
+      // Step 1: start audio sync engine
       setConnectionStep("engine");
-      const style = STYLES.find(s => s.id === selectedStyle)!;
+      const style  = STYLES.find(s => s.id === selectedStyle)!;
       const prompt = customPrompt.trim() || style.prompt;
-
-      const { createDecartClient, models } = await getDecartSdk();
-      const client = createDecartClient({ apiKey });
 
       const engine = new AutoSyncEngine();
       engine.onUpdate = (delay, vu) => { setSyncDelay(delay); setVuLevel(vu); };
-      const audioStream = await engine.start(remoteVideoRef.current!);
+      const audioDest = await engine.start(remoteVideoRef.current!);
       syncEngineRef.current = engine;
 
-      let combined = localStreamRef.current;
-      if (audioStream) {
-        const track = audioStream.stream.getAudioTracks()[0];
-        if (track) combined = new MediaStream([...localStreamRef.current.getVideoTracks(), track]);
-        setAudioActive(true);
+      // Build the stream we send — video from webcam + optionally delayed mic
+      let sendStream = localStreamRef.current;
+      if (audioDest) {
+        const audioTrack = audioDest.stream.getAudioTracks()[0];
+        if (audioTrack) {
+          sendStream = new MediaStream([
+            ...localStreamRef.current.getVideoTracks(),
+            audioTrack,
+          ]);
+          setAudioActive(true);
+        }
       }
 
-      const rt = await client.realtime.connect(combined, {
-        model: models.realtime("lucy-2.1"),
-        onRemoteStream: (remote: MediaStream) => {
+      // Step 2: connect to fal.ai WMA bridge
+      const session = await falStartSession(
+        apiKey,
+        sendStream,
+        (remote) => {
+          // Remote AI stream arrived
           remoteStreamRef.current = remote;
           if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
-
-          // Store globally so popout windows can access via window.opener.__ssRemoteStream
           window.__ssRemoteStream = remote;
-
-          // Notify any already-open popup windows (trigger only — stream accessed via opener)
           notifyPopup(popoutRef.current);
           notifyPopup(obsWindowRef.current);
-
           setConnectionStatus("connected");
         },
-        onConnectionChange: (state) => {
-          if (state === "connected") setConnectionStatus("connected");
-          else if (state === "disconnected" || state === "failed") {
-            teardownStream();
-            toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" });
-          }
+        () => {
+          // Disconnected / failed
+          teardownStream();
+          toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" });
         },
-        initialState: {
-          prompt: { text: prompt },
-        },
-      });
-      decartRef.current = rt;
+        prompt,
+        refImageB64,
+      );
 
-      if (refImageB64) { try { await rt.setImage(refImageB64); } catch { /* non-fatal */ } }
+      falSessionRef.current = session;
 
       sessionStart();
       const t0 = Date.now();
@@ -349,54 +473,87 @@ export default function StreamPage() {
         setElapsedSecs(s);
         sessionTick(s);
       }, 1000);
-      setIsStreaming(true); setConnectionStatus("connected");
+
+      setIsStreaming(true);
+      // connectionStatus will flip to "connected" once onRemoteStream fires
+
     } catch (err) {
       teardownStream();
-      toast({ title: "Stream Failed", description: err instanceof Error ? err.message : "Check your API Key in Settings.", variant: "destructive" });
+      toast({
+        title: "Stream Failed",
+        description: err instanceof Error ? err.message : "Check your fal.ai API Key in Settings.",
+        variant: "destructive",
+      });
     } finally {
-      isStartingRef.current = false; setIsStarting(false);
+      isStartingRef.current = false;
+      setIsStarting(false);
     }
   }, [isStreaming, credsMissing, cameraReady, selectedStyle, customPrompt, refImageB64, teardownStream, toast]);
 
   const handleStopStream = useCallback(() => teardownStream(), [teardownStream]);
+
+  // ─── Live prompt update while streaming ──────────────────────────────────
+  // Send updated prompt whenever the user changes style / custom prompt mid-stream
+  const handlePromptChange = useCallback((newPrompt: string) => {
+    if (falSessionRef.current && isStreaming) {
+      falSendPrompt(falSessionRef.current, newPrompt, refImageB64);
+    }
+  }, [isStreaming, refImageB64]);
+
+  const handleStyleSelect = useCallback((id: StyleId) => {
+    setSelectedStyle(id);
+    const style  = STYLES.find(s => s.id === id)!;
+    const prompt = customPrompt.trim() || style.prompt;
+    handlePromptChange(prompt);
+  }, [customPrompt, handlePromptChange]);
+
+  const handleCustomPromptChange = useCallback((val: string) => {
+    setCustomPrompt(val);
+    if (isStreaming) {
+      const style  = STYLES.find(s => s.id === selectedStyle)!;
+      handlePromptChange(val.trim() || style.prompt);
+    }
+  }, [isStreaming, selectedStyle, handlePromptChange]);
 
   // ─── Reference image ──────────────────────────────────────────────────────
   const handleRefImage = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     const r = new FileReader();
     r.onload = ev => {
-      const data = ev.target?.result as string;
-      setRefImagePreview(data); setRefImageB64(data.split(",")[1] ?? data);
-      decartRef.current?.setImage(data.split(",")[1] ?? data).catch(() => {});
+      const data  = ev.target?.result as string;
+      const b64   = data.split(",")[1] ?? data;
+      setRefImagePreview(data);
+      setRefImageB64(b64);
+      if (falSessionRef.current && isStreaming) {
+        const style  = STYLES.find(s => s.id === selectedStyle)!;
+        const prompt = customPrompt.trim() || style.prompt;
+        falSendPrompt(falSessionRef.current, prompt, b64);
+      }
     };
-    r.readAsDataURL(file); e.target.value = "";
-  }, []);
+    r.readAsDataURL(file);
+    e.target.value = "";
+  }, [isStreaming, selectedStyle, customPrompt]);
 
-  // ─── Regular popout (controls visible on hover) ───────────────────────────
+  // ─── Popout windows ───────────────────────────────────────────────────────
   const openPopout = useCallback(() => {
     if (popoutRef.current && !popoutRef.current.closed) { popoutRef.current.focus(); return; }
-    const base = getBaseUrl();
-    const w = window.open(base + "#/popout", "ss-popout", "width=1280,height=720,menubar=no,toolbar=no,location=no");
+    const w = window.open(getBaseUrl() + "#/popout", "ss-popout", "width=1280,height=720,menubar=no,toolbar=no,location=no");
     if (!w) return;
     popoutRef.current = w;
     setIsPopoutOpen(true);
-    // When the new window finishes loading, send the stream trigger
     w.addEventListener("load", () => notifyPopup(w));
     const chk = setInterval(() => {
       if (w.closed) { clearInterval(chk); setIsPopoutOpen(false); popoutRef.current = null; }
     }, 1000);
   }, []);
 
-  // ─── OBS clean output window (absolutely no controls) ────────────────────
   const openObsWindow = useCallback(() => {
     if (obsWindowRef.current && !obsWindowRef.current.closed) { obsWindowRef.current.focus(); return; }
-    const base = getBaseUrl();
-    const w = window.open(base + "#/obsout", "ss-obsout", "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no");
+    const w = window.open(getBaseUrl() + "#/obsout", "ss-obsout", "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no");
     if (!w) return;
     obsWindowRef.current = w;
     setIsObsModeActive(true);
     setObsInstructions(true);
-    // When the new window finishes loading, send the stream trigger
     w.addEventListener("load", () => notifyPopup(w));
     const chk = setInterval(() => {
       if (w.closed) { clearInterval(chk); setIsObsModeActive(false); setObsInstructions(false); obsWindowRef.current = null; }
@@ -416,10 +573,7 @@ export default function StreamPage() {
     setIsPopoutOpen(false);
   }, []);
 
-  const closeAllPopups = useCallback(() => {
-    closePopout();
-    closeObsWindow();
-  }, [closePopout, closeObsWindow]);
+  const closeAllPopups = useCallback(() => { closePopout(); closeObsWindow(); }, [closePopout, closeObsWindow]);
 
   // ─── Message listener (from popout windows) ───────────────────────────────
   useEffect(() => {
@@ -437,25 +591,15 @@ export default function StreamPage() {
   // ─── Keyboard shortcuts ───────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // ESC: close fullscreen first; if not fullscreen, close popups and stop stream
       if (e.key === "Escape") {
-        if (isFullscreen) {
-          // Stop the stream AND exit fullscreen (fullscreen = streaming is linked)
-          teardownStream();
-          setIsFullscreen(false);
-          return;
-        }
+        if (isFullscreen) { teardownStream(); setIsFullscreen(false); return; }
         closeAllPopups();
         if (isStreaming) teardownStream();
         return;
       }
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      // F: toggle in-app fullscreen overlay of the AI output (NOT a new window)
-      if (e.key === "f" || e.key === "F") {
-        e.preventDefault();
-        setIsFullscreen(v => !v);
-      }
+      if (e.key === "f" || e.key === "F") { e.preventDefault(); setIsFullscreen(v => !v); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -465,12 +609,12 @@ export default function StreamPage() {
 
   return (
     <AppLayout>
-      {/* ── Missing credentials banner ─────────────────────────────────── */}
+      {/* ── Missing credentials banner ───────────────────────────────────── */}
       {credsMissing && (
         <div style={{ margin: "16px 32px 0", padding: "12px 18px", borderRadius: 10, background: "hsl(40 100% 52% / 0.1)", border: "1px solid hsl(40 100% 52% / 0.35)", display: "flex", alignItems: "center", gap: 12 }}>
           <Settings style={{ width: 16, height: 16, color: "hsl(40 100% 62%)", flexShrink: 0 }} />
           <p style={{ fontSize: 13, color: "hsl(40 100% 75%)", fontFamily: "'Rajdhani',sans-serif", flex: 1 }}>
-            <strong>API Key not set.</strong> Go to Settings to add it before streaming.
+            <strong>fal.ai API Key not set.</strong> Go to Settings to add it before streaming.
           </p>
           <button onClick={() => setLocation("/settings")} style={{ padding: "6px 14px", borderRadius: 8, background: "hsl(40 100% 52% / 0.25)", border: "1px solid hsl(40 100% 52% / 0.5)", color: "hsl(40 100% 80%)", fontWeight: 700, fontSize: 12, fontFamily: "'Orbitron',monospace", cursor: "pointer", letterSpacing: "0.04em" }}>
             Open Settings
@@ -478,7 +622,7 @@ export default function StreamPage() {
         </div>
       )}
 
-      {/* ── Starting overlay ───────────────────────────────────────────── */}
+      {/* ── Starting overlay ──────────────────────────────────────────────── */}
       {isStarting && (
         <div style={{ position: "fixed", inset: 0, zIndex: 55, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ position: "absolute", inset: 0, backdropFilter: "blur(8px)", background: "hsl(222 47% 4% / 0.88)" }} />
@@ -489,7 +633,9 @@ export default function StreamPage() {
             <div>
               <h3 style={{ fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 16, letterSpacing: "0.06em", color: "hsl(190 80% 96%)", marginBottom: 8 }}>Starting Stream…</h3>
               <p style={{ fontSize: 13, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>
-                {connectionStep === "engine" ? "2/2 · Connecting to AI engine + auto-syncing audio…" : "1/2 · Validating credentials…"}
+                {connectionStep === "engine"
+                  ? "2/2 · Connecting to fal.ai Lucy 2.5…"
+                  : "1/2 · Validating API Key…"}
               </p>
             </div>
             <div style={{ display: "flex", gap: 8, width: "100%", padding: "0 8px" }}>
@@ -498,55 +644,26 @@ export default function StreamPage() {
                 return <div key={step} style={{ flex: 1, height: 4, borderRadius: 2, transition: "all 0.5s", background: i < idx ? C : i === idx ? "hsl(187 100% 52% / 0.45)" : "hsl(222 40% 14%)" }} />;
               })}
             </div>
-            <button onClick={() => teardownStream()}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 20px", borderRadius: 8, width: "100%", justifyContent: "center", background: "transparent", border: "1px solid hsl(187 100% 52% / 0.25)", color: "hsl(187 100% 52% / 0.8)", fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani',sans-serif", cursor: "pointer" }}>
+            <button onClick={() => teardownStream()} style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 20px", borderRadius: 8, width: "100%", justifyContent: "center", background: "transparent", border: "1px solid hsl(187 100% 52% / 0.25)", color: "hsl(187 100% 52% / 0.8)", fontWeight: 700, fontSize: 13, fontFamily: "'Rajdhani',sans-serif", cursor: "pointer" }}>
               <X style={{ width: 14, height: 14 }} /> Cancel
             </button>
           </div>
         </div>
       )}
 
-      {/* ── In-app fullscreen overlay (F key or Maximize button) ──────────
-          Shows only the AI output video, no UI chrome.
-          Close button stops the stream and exits fullscreen.           ── */}
+      {/* ── Fullscreen overlay (F key) ────────────────────────────────────── */}
       {isFullscreen && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 9000,
-          background: "#000",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}>
-          <video
-            autoPlay
-            playsInline
-            ref={(el) => {
-              if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current;
-            }}
+        <div style={{ position: "fixed", inset: 0, zIndex: 9000, background: "#000", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <video autoPlay playsInline
+            ref={(el) => { if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current; }}
             style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)", display: "block" }}
           />
-          {/* Close button — stops the stream */}
-          <button
-            onClick={() => { teardownStream(); setIsFullscreen(false); }}
-            title="Stop stream & exit fullscreen (Esc)"
-            style={{
-              position: "absolute", top: 16, left: 16, zIndex: 10,
-              width: 36, height: 36, borderRadius: "50%",
-              background: "rgba(220,38,38,0.85)", border: "1px solid rgba(255,100,100,0.4)",
-              color: "#fff", cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "0 2px 12px rgba(0,0,0,0.5)",
-            }}
-          >
+          <button onClick={() => { teardownStream(); setIsFullscreen(false); }} title="Stop stream & exit fullscreen (Esc)"
+            style={{ position: "absolute", top: 16, left: 16, zIndex: 10, width: 36, height: 36, borderRadius: "50%", background: "rgba(220,38,38,0.85)", border: "1px solid rgba(255,100,100,0.4)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 12px rgba(0,0,0,0.5)" }}>
             <X style={{ width: 16, height: 16 }} />
           </button>
-          {/* Elapsed timer */}
           {isStreaming && (
-            <div style={{
-              position: "absolute", top: 16, right: 16,
-              padding: "4px 12px", borderRadius: 20,
-              background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)",
-              color: C, fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 13,
-              letterSpacing: "0.06em",
-            }}>
+            <div style={{ position: "absolute", top: 16, right: 16, padding: "4px 12px", borderRadius: 20, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", color: C, fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 13, letterSpacing: "0.06em" }}>
               {formatTime(elapsedSecs)}
             </div>
           )}
@@ -558,7 +675,7 @@ export default function StreamPage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22, flexWrap: "wrap", gap: 12 }}>
           <div>
             <h1 style={{ fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 20, letterSpacing: "0.06em", color: "hsl(190 80% 96%)", marginBottom: 2 }}>Live Stream</h1>
-            <p style={{ fontSize: 13, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>Real-time AI video transformation</p>
+            <p style={{ fontSize: 13, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>Real-time AI video transformation · Lucy 2.5 on fal.ai</p>
           </div>
           {isStreaming && connectionStatus === "connected" && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", borderRadius: 10, background: "hsl(0 85% 55% / 0.1)", border: "1px solid hsl(0 85% 55% / 0.2)" }}>
@@ -571,7 +688,7 @@ export default function StreamPage() {
         {/* Main grid */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 316px", gap: 20 }}>
 
-          {/* ── Left column ──────────────────────────────────────────────── */}
+          {/* ── Left column ────────────────────────────────────────────────── */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
             {/* AI Output video panel */}
@@ -579,7 +696,7 @@ export default function StreamPage() {
               position: "relative", width: "100%", aspectRatio: "16/9",
               borderRadius: 14, overflow: "hidden", background: "#000",
               boxShadow: connectionStatus === "connected"
-                ? `0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)`
+                ? "0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)"
                 : "0 0 0 1px hsl(222 40% 14%)",
             }}>
               <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transform: "scaleX(-1)" }} />
@@ -598,22 +715,10 @@ export default function StreamPage() {
 
               {/* Top-right action buttons */}
               <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
-                {/* OBS — opens a completely clean window for window-capture in OBS */}
+                {/* OBS clean window */}
                 <div style={{ position: "relative" }}>
-                  <button
-                    onClick={isObsModeActive ? closeObsWindow : openObsWindow}
-                    title={isObsModeActive ? "Close OBS window" : "Open clean OBS output window"}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 5,
-                      height: 30, padding: "0 10px", borderRadius: 20,
-                      background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)",
-                      color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff",
-                      border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)",
-                      fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1,
-                      cursor: "pointer",
-                      boxShadow: isObsModeActive ? "0 0 12px rgba(0,210,211,0.4)" : "none",
-                    }}
-                  >
+                  <button onClick={isObsModeActive ? closeObsWindow : openObsWindow} title={isObsModeActive ? "Close OBS window" : "Open clean OBS output window"}
+                    style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff", border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer", boxShadow: isObsModeActive ? "0 0 12px rgba(0,210,211,0.4)" : "none" }}>
                     <Monitor style={{ width: 11, height: 11 }} /> OBS
                   </button>
                   {obsInstructions && (
@@ -623,38 +728,21 @@ export default function StreamPage() {
                         <button onClick={() => setObsInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
                       </div>
                       <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
-                        Clean output window is open — no controls or UI. In OBS → Sources → + → Window Capture → select "Stream Studio OBS".
+                        Clean output window is open. In OBS → Sources → + → Window Capture → select "Stream Studio OBS".
                       </p>
                     </div>
                   )}
                 </div>
 
-                {/* Regular popout (controls on hover) */}
-                <button
-                  onClick={isPopoutOpen ? closePopout : openPopout}
-                  title={isPopoutOpen ? "Close popout" : "Open popout window"}
-                  style={{
-                    width: 30, height: 30, borderRadius: "50%",
-                    background: isPopoutOpen ? "rgba(0,210,211,0.85)" : "rgba(0,0,0,0.6)",
-                    border: isPopoutOpen ? "1px solid rgba(0,210,211,0.5)" : "1px solid rgba(255,255,255,0.2)",
-                    color: "#fff", cursor: "pointer",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                  }}
-                >
+                {/* Regular popout */}
+                <button onClick={isPopoutOpen ? closePopout : openPopout} title={isPopoutOpen ? "Close popout" : "Open popout window"}
+                  style={{ width: 30, height: 30, borderRadius: "50%", background: isPopoutOpen ? "rgba(0,210,211,0.85)" : "rgba(0,0,0,0.6)", border: isPopoutOpen ? "1px solid rgba(0,210,211,0.5)" : "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Monitor style={{ width: 13, height: 13 }} />
                 </button>
 
-                {/* Fullscreen (in-app overlay) */}
-                <button
-                  onClick={() => setIsFullscreen(v => !v)}
-                  title="Fullscreen AI output (F)"
-                  style={{
-                    width: 30, height: 30, borderRadius: "50%",
-                    background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)",
-                    color: "#fff", cursor: "pointer",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                  }}
-                >
+                {/* Fullscreen */}
+                <button onClick={() => setIsFullscreen(v => !v)} title="Fullscreen AI output (F)"
+                  style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Maximize2 style={{ width: 13, height: 13 }} />
                 </button>
               </div>
@@ -691,7 +779,8 @@ export default function StreamPage() {
                   </div>
                 ) : (
                   <div style={{ position: "relative" }}>
-                    <select value={selectedCameraId} onChange={e => handleCameraSwitch(e.target.value)} disabled={isStreaming} style={{ width: "100%", appearance: "none", padding: "8px 32px 8px 12px", background: "hsl(222 47% 4%)", border: "1px solid hsl(222 40% 14%)", borderRadius: 8, color: "hsl(190 80% 96%)", fontSize: 13, fontFamily: "'Rajdhani',sans-serif", cursor: "pointer", opacity: isStreaming ? 0.5 : 1 }}>
+                    <select value={selectedCameraId} onChange={e => handleCameraSwitch(e.target.value)} disabled={isStreaming}
+                      style={{ width: "100%", appearance: "none", padding: "8px 32px 8px 12px", background: "hsl(222 47% 4%)", border: "1px solid hsl(222 40% 14%)", borderRadius: 8, color: "hsl(190 80% 96%)", fontSize: 13, fontFamily: "'Rajdhani',sans-serif", cursor: "pointer", opacity: isStreaming ? 0.5 : 1 }}>
                       {cameras.map((cam, i) => <option key={cam.deviceId} value={cam.deviceId}>{cam.label || `Camera ${i + 1}`}</option>)}
                     </select>
                     <ChevronDown style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "hsl(222 25% 50%)", pointerEvents: "none" }} />
@@ -703,15 +792,20 @@ export default function StreamPage() {
 
             {/* Stream button */}
             {isStreaming ? (
-              <button onClick={handleStopStream} style={{ width: "100%", height: 54, background: "hsl(0 85% 40% / 0.3)", border: "1px solid hsl(0 85% 55% / 0.5)", borderRadius: 12, cursor: "pointer", color: "hsl(0 85% 75%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.5)"; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.3)"; }}>
+              <button onClick={handleStopStream}
+                style={{ width: "100%", height: 54, background: "hsl(0 85% 40% / 0.3)", border: "1px solid hsl(0 85% 55% / 0.5)", borderRadius: 12, cursor: "pointer", color: "hsl(0 85% 75%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.5)"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.3)"; }}>
                 <Square style={{ width: 18, height: 18 }} /> Stop Stream
               </button>
             ) : (
-              <button onClick={handleStartStream} disabled={isStarting || !cameraReady} style={{ width: "100%", height: 54, background: (!isStarting && cameraReady && !credsMissing) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (!isStarting && cameraReady && !credsMissing) ? "pointer" : "not-allowed", color: (!isStarting && cameraReady && !credsMissing) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (!isStarting && cameraReady && !credsMissing) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none", transition: "all 0.2s" }}
-                onMouseEnter={e => { if (!isStarting && cameraReady && !credsMissing) (e.currentTarget as HTMLElement).style.filter = "brightness(1.1)"; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.filter = "none"; }}>
-                {isStarting ? <><Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> Starting…</>
-                  : credsMissing ? <><Settings style={{ width: 18, height: 18 }} /> Open Settings to Set Keys</>
+              <button onClick={handleStartStream} disabled={isStarting || !cameraReady}
+                style={{ width: "100%", height: 54, background: (!isStarting && cameraReady && !credsMissing) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (!isStarting && cameraReady && !credsMissing) ? "pointer" : "not-allowed", color: (!isStarting && cameraReady && !credsMissing) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (!isStarting && cameraReady && !credsMissing) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none", transition: "all 0.2s" }}
+                onMouseEnter={e => { if (!isStarting && cameraReady && !credsMissing) (e.currentTarget as HTMLElement).style.filter = "brightness(1.1)"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.filter = "none"; }}>
+                {isStarting
+                  ? <><Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> Starting…</>
+                  : credsMissing ? <><Settings style={{ width: 18, height: 18 }} /> Open Settings to Set Key</>
                   : !cameraReady ? <><Camera style={{ width: 18, height: 18 }} /> Enable Camera First</>
                   : <><Play style={{ width: 18, height: 18 }} /> Stream Now</>}
               </button>
@@ -739,7 +833,7 @@ export default function StreamPage() {
             </div>
           </div>
 
-          {/* ── Right sidebar ──────────────────────────────────────────────── */}
+          {/* ── Right sidebar ───────────────────────────────────────────────── */}
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
             {/* Style presets */}
@@ -747,7 +841,8 @@ export default function StreamPage() {
               <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace", marginBottom: 12 }}>AI Style Preset</p>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                 {STYLES.map(s => (
-                  <button key={s.id} onClick={() => setSelectedStyle(s.id)} style={{ padding: "7px 4px", borderRadius: 8, cursor: "pointer", background: selectedStyle === s.id ? `${s.color}22` : "hsl(222 40% 8%)", border: `1px solid ${selectedStyle === s.id ? s.color + "66" : "hsl(222 40% 12%)"}`, color: selectedStyle === s.id ? s.color : "hsl(222 25% 55%)", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", fontFamily: "'Orbitron',monospace", transition: "all 0.15s", boxShadow: selectedStyle === s.id ? `0 0 12px ${s.color}33` : "none" }}>
+                  <button key={s.id} onClick={() => handleStyleSelect(s.id)}
+                    style={{ padding: "7px 4px", borderRadius: 8, cursor: "pointer", background: selectedStyle === s.id ? `${s.color}22` : "hsl(222 40% 8%)", border: `1px solid ${selectedStyle === s.id ? s.color + "66" : "hsl(222 40% 12%)"}`, color: selectedStyle === s.id ? s.color : "hsl(222 25% 55%)", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", fontFamily: "'Orbitron',monospace", transition: "all 0.15s", boxShadow: selectedStyle === s.id ? `0 0 12px ${s.color}33` : "none" }}>
                     {s.label}
                   </button>
                 ))}
@@ -757,9 +852,15 @@ export default function StreamPage() {
             {/* Custom prompt */}
             <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 16 }}>
               <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace", marginBottom: 8 }}>Custom Prompt</p>
-              <textarea value={customPrompt} onChange={e => setCustomPrompt(e.target.value)} placeholder={style.prompt} rows={3} style={{ width: "100%", padding: 10, borderRadius: 8, resize: "vertical", background: "hsl(222 47% 4%)", border: "1px solid hsl(222 40% 14%)", color: "hsl(190 80% 96%)", fontSize: 12, fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5, outline: "none" }}
-                onFocus={e => { e.target.style.borderColor = "hsl(187 100% 52% / 0.5)"; }} onBlur={e => { e.target.style.borderColor = "hsl(222 40% 14%)"; }} />
-              {customPrompt && <button onClick={() => setCustomPrompt("")} style={{ marginTop: 6, fontSize: 11, color: "hsl(222 25% 50%)", background: "none", border: "none", cursor: "pointer", fontFamily: "'Rajdhani',sans-serif" }}>↺ Reset to preset</button>}
+              <textarea value={customPrompt} onChange={e => handleCustomPromptChange(e.target.value)} placeholder={style.prompt} rows={3}
+                style={{ width: "100%", padding: 10, borderRadius: 8, resize: "vertical", background: "hsl(222 47% 4%)", border: "1px solid hsl(222 40% 14%)", color: "hsl(190 80% 96%)", fontSize: 12, fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5, outline: "none" }}
+                onFocus={e => { e.target.style.borderColor = "hsl(187 100% 52% / 0.5)"; }}
+                onBlur={e => { e.target.style.borderColor = "hsl(222 40% 14%)"; }} />
+              {customPrompt && (
+                <button onClick={() => handleCustomPromptChange("")} style={{ marginTop: 6, fontSize: 11, color: "hsl(222 25% 50%)", background: "none", border: "none", cursor: "pointer", fontFamily: "'Rajdhani',sans-serif" }}>
+                  ↺ Reset to preset
+                </button>
+              )}
             </div>
 
             {/* Auto Audio Sync */}
@@ -767,15 +868,12 @@ export default function StreamPage() {
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                 <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace" }}>Audio Sync</p>
                 <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 20, background: audioActive ? "hsl(187 100% 52% / 0.12)" : "hsl(222 40% 9%)", border: `1px solid ${audioActive ? "hsl(187 100% 52% / 0.35)" : "hsl(222 40% 14%)"}` }}>
-                  {audioActive
-                    ? <Wifi style={{ width: 10, height: 10, color: C }} />
-                    : <WifiOff style={{ width: 10, height: 10, color: "hsl(222 25% 40%)" }} />}
+                  {audioActive ? <Wifi style={{ width: 10, height: 10, color: C }} /> : <WifiOff style={{ width: 10, height: 10, color: "hsl(222 25% 40%)" }} />}
                   <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em", color: audioActive ? C : "hsl(222 25% 40%)" }}>
                     {audioActive ? "AUTO" : "IDLE"}
                   </span>
                 </div>
               </div>
-
               {audioActive ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <div>
@@ -796,11 +894,9 @@ export default function StreamPage() {
                   </p>
                 </div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <p style={{ fontSize: 12, color: "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5 }}>
-                    When you click <strong style={{ color: "hsl(190 80% 80%)" }}>Stream Now</strong>, your default microphone is automatically detected and the audio delay is calibrated to match the AI video output in real time.
-                  </p>
-                </div>
+                <p style={{ fontSize: 12, color: "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5 }}>
+                  When you click <strong style={{ color: "hsl(190 80% 80%)" }}>Stream Now</strong>, your default microphone is automatically detected and the audio delay is calibrated to match the AI video in real time.
+                </p>
               )}
             </div>
 
@@ -810,11 +906,14 @@ export default function StreamPage() {
               {refImagePreview ? (
                 <div style={{ position: "relative" }}>
                   <img src={refImagePreview} alt="Ref" style={{ width: "100%", aspectRatio: "16/9", objectFit: "cover", borderRadius: 8, border: "1px solid hsl(187 100% 52% / 0.3)" }} />
-                  <button onClick={() => { setRefImagePreview(null); setRefImageB64(null); }} style={{ position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: "50%", background: "rgba(220,38,38,0.8)", border: "none", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><X style={{ width: 10, height: 10 }} /></button>
+                  <button onClick={() => { setRefImagePreview(null); setRefImageB64(null); }} style={{ position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: "50%", background: "rgba(220,38,38,0.8)", border: "none", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <X style={{ width: 10, height: 10 }} />
+                  </button>
                 </div>
               ) : (
                 <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "18px 12px", borderRadius: 10, cursor: "pointer", background: "hsl(222 40% 8%)", border: "1px dashed hsl(222 40% 16%)", transition: "all 0.2s" }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "hsl(187 100% 52% / 0.4)"; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "hsl(222 40% 16%)"; }}>
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "hsl(187 100% 52% / 0.4)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "hsl(222 40% 16%)"; }}>
                   <Image style={{ width: 22, height: 22, color: "hsl(222 25% 40%)" }} />
                   <p style={{ fontSize: 12, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif", textAlign: "center" }}>Upload a face reference to guide the AI</p>
                   <input type="file" accept="image/*" onChange={handleRefImage} style={{ display: "none" }} />
