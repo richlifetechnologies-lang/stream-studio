@@ -9,11 +9,7 @@ import {
   RefreshCw, ChevronDown, Image, Loader2, X,
   Settings, Mic, Wifi, WifiOff,
 } from "lucide-react";
-
-// ─── fal.ai signaling constants ───────────────────────────────────────────────
-const FAL_APP_ID = "decart/lucy-2-5/realtime";
-const FAL_TOKEN_URL = "https://fal.run/token/grant";
-const FAL_WS_BASE   = "wss://fal.run";
+import { fal } from "@fal-ai/client";
 
 // ─── Style presets ────────────────────────────────────────────────────────────
 const STYLES = [
@@ -35,7 +31,7 @@ function formatTime(s: number) {
 
 const C = "hsl(187 100% 52%)";
 
-// ─── Audio/Video sync engine ──────────────────────────────────────────────────
+// ─── Audio sync engine ────────────────────────────────────────────────────────
 const WINDOW_MS = 60;
 const BUF_SECS  = 6;
 const BUF_LEN   = Math.round((BUF_SECS * 1000) / WINDOW_MS);
@@ -73,19 +69,14 @@ class AutoSyncEngine {
       delay.delayTime.value = this.detectedDelay;
       const gain = ctx.createGain(); gain.gain.value = 1.0;
       const dest = ctx.createMediaStreamDestination();
-      src.connect(analyser);
-      analyser.connect(delay);
-      delay.connect(gain);
-      gain.connect(dest);
+      src.connect(analyser); analyser.connect(delay); delay.connect(gain); gain.connect(dest);
       this.audioCtx = ctx; this.analyser = analyser;
       this.delayNode = delay; this.gainNode = gain; this.dest = dest;
       this.offCanvas = new OffscreenCanvas(80, 45);
       this.offCtx    = this.offCanvas.getContext("2d")!;
       this.timer     = setInterval(() => this._tick(), WINDOW_MS);
       return dest;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
   private _tick() {
@@ -93,7 +84,6 @@ class AutoSyncEngine {
     this.analyser.getByteFrequencyData(this.freqData);
     const rms = Math.sqrt(this.freqData.reduce((s, v) => s + v * v, 0) / this.freqData.length) / 128;
     this.vuLevel = Math.min(100, rms * 100);
-
     let vDelta = 0;
     if (this.offCtx && !this.videoEl.paused && this.videoEl.readyState >= 2) {
       try {
@@ -102,32 +92,28 @@ class AutoSyncEngine {
         if (this.prevPixels) {
           let sum = 0;
           for (let i = 0; i < frame.data.length; i += 4) {
-            sum += Math.abs(frame.data[i]   - this.prevPixels[i])
+            sum += Math.abs(frame.data[i] - this.prevPixels[i])
                  + Math.abs(frame.data[i+1] - this.prevPixels[i+1])
                  + Math.abs(frame.data[i+2] - this.prevPixels[i+2]);
           }
           vDelta = sum / (frame.data.length * 0.75 * 255);
         }
         this.prevPixels = new Uint8ClampedArray(frame.data);
-      } catch { /* cross-origin / not ready */ }
+      } catch { /* ignore */ }
     }
-
-    this.audioSig.push(rms);
-    this.videoSig.push(vDelta);
+    this.audioSig.push(rms); this.videoSig.push(vDelta);
     if (this.audioSig.length > BUF_LEN) this.audioSig.shift();
     if (this.videoSig.length > BUF_LEN) this.videoSig.shift();
-
     if (this.audioSig.length === BUF_LEN && this.audioSig.length % 50 === 0) {
-      const maxLagSamples = Math.round((MAX_DELAY * 1000) / WINDOW_MS);
+      const maxLag = Math.round((MAX_DELAY * 1000) / WINDOW_MS);
       let bestLag = 0, bestCorr = -Infinity;
-      for (let lag = 1; lag <= maxLagSamples; lag++) {
+      for (let lag = 1; lag <= maxLag; lag++) {
         let corr = 0;
-        const n = BUF_LEN - lag;
-        for (let i = 0; i < n; i++) corr += this.audioSig[i] * this.videoSig[i + lag];
+        for (let i = 0; i < BUF_LEN - lag; i++) corr += this.audioSig[i] * this.videoSig[i + lag];
         if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
       }
-      const newDelay = Math.max(MIN_DELAY, Math.min(MAX_DELAY, bestLag * WINDOW_MS / 1000));
-      this.detectedDelay = 0.8 * this.detectedDelay + 0.2 * newDelay;
+      const nd = Math.max(MIN_DELAY, Math.min(MAX_DELAY, bestLag * WINDOW_MS / 1000));
+      this.detectedDelay = 0.8 * this.detectedDelay + 0.2 * nd;
       if (this.delayNode) this.delayNode.delayTime.value = this.detectedDelay;
     }
     this.onUpdate?.(this.detectedDelay, this.vuLevel);
@@ -137,53 +123,40 @@ class AutoSyncEngine {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.audioCtx) { this.audioCtx.close().catch(() => {}); this.audioCtx = null; }
     this.dest = null; this.delayNode = null; this.gainNode = null;
-    this.analyser = null; this.audioSig = []; this.videoSig = [];
-    this.prevPixels = null;
+    this.analyser = null; this.audioSig = []; this.videoSig = []; this.prevPixels = null;
   }
-
-  getDestStream(): MediaStream | null { return this.dest?.stream ?? null; }
 }
 
-// ─── fal.ai Lucy 2.5 WebRTC engine ────────────────────────────────────────────
+// ─── fal.ai Lucy 2.5 WebRTC engine ───────────────────────────────────────────
 //
-// Signaling flow (WebSocket-based, trickle ICE):
-//  1. POST FAL_TOKEN_URL with API key  → short-lived JWT
-//  2. Open WebSocket: wss://fal.run/<appId>?fal_jwt_token=<jwt>
-//  3. Wait for {type:"iceservers"} to get TURN/STUN config
-//  4. Create RTCPeerConnection, add local tracks, create offer
-//  5. Send {type:"offer", sdp:...} over WebSocket
-//  6. WebSocket delivers {type:"answer", sdp:...} → setRemoteDescription
-//  7. Exchange trickle ICE candidates over WebSocket
-//  8. ontrack fires with the AI output MediaStream
-//  9. Send prompt updates as {type:"update", prompt:..., reference_image_url:...}
-// 10. Close WebSocket + PeerConnection to end session
+// Lucy 2.5 uses WebRTC for media transport with fal.ai acting as signaling relay.
+// The @fal-ai/client SDK handles auth + WebSocket signaling automatically.
+// We use fal.realtime.connect which exchanges SDP offer/answer and ICE candidates,
+// then media flows peer-to-peer between the browser and Decart's servers.
+//
+// Flow:
+//   1. fal.config({ credentials: apiKey }) — auth once per session
+//   2. fal.realtime.connect("decart/lucy-2-5/realtime") — opens WS signaling
+//   3. connection.send({ sdp, type: "offer" }) — sends our WebRTC offer
+//   4. onResult fires with { sdp, type: "answer" } — we apply as remote desc
+//   5. Trickle ICE via connection.send({ type: "icecandidate", candidate })
+//   6. ontrack fires — AI video stream arrives
+//   7. connection.send({ prompt, reference_image_url }) — live prompt updates
+//   8. connection.close() — end session
+
+interface FalRealtimeConnection {
+  send: (data: Record<string, unknown>) => void;
+  close: () => void;
+}
 
 interface FalSession {
+  connection: FalRealtimeConnection;
   pc: RTCPeerConnection;
-  ws: WebSocket;
 }
 
-const DEFAULT_ICE = [{ urls: "stun:stun.l.google.com:19302" }];
+const DEFAULT_ICE: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
-async function falGetToken(apiKey: string): Promise<string> {
-  const res = await fetch(FAL_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Key ${apiKey}`,
-    },
-    body: JSON.stringify({ allowed_apps: [FAL_APP_ID], token_expiration_seconds: 120 }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`fal.ai auth failed (${res.status}): ${txt}`);
-  }
-  const data = await res.json();
-  // response is either a plain string or { token: "..." }
-  return typeof data === "string" ? data : (data.token ?? data.detail ?? data);
-}
-
-async function falStartSession(
+async function startFalSession(
   apiKey: string,
   localStream: MediaStream,
   onRemoteStream: (s: MediaStream) => void,
@@ -191,152 +164,127 @@ async function falStartSession(
   initialPrompt: string,
   refImageB64: string | null,
 ): Promise<FalSession> {
+  // Configure fal SDK with the API key
+  fal.config({ credentials: apiKey });
 
-  // 1. Get short-lived JWT
-  const token = await falGetToken(apiKey);
-
-  // 2. Open signaling WebSocket
-  const wsUrl = `${FAL_WS_BASE}/${FAL_APP_ID}?fal_jwt_token=${encodeURIComponent(token)}`;
-  const ws = new WebSocket(wsUrl);
-
-  let pc: RTCPeerConnection | null = null;
+  const pc = new RTCPeerConnection({ iceServers: DEFAULT_ICE });
   const remoteStream = new MediaStream();
-  let offerSent = false;
 
-  const sendWs = (payload: Record<string, unknown>) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
+  // Add local tracks (video + audio)
+  localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+  // Collect remote AI video tracks
+  pc.ontrack = (ev) => {
+    const src = ev.streams[0];
+    if (src) {
+      src.getTracks().forEach(t => {
+        if (!remoteStream.getTrackById(t.id)) remoteStream.addTrack(t);
+      });
+    } else {
+      if (!remoteStream.getTrackById(ev.track.id)) remoteStream.addTrack(ev.track);
+    }
+    if (remoteStream.getTracks().length > 0) onRemoteStream(remoteStream);
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      onDisconnect();
     }
   };
 
   return new Promise<FalSession>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error("fal.ai connection timed out (30s)"));
-      try { ws.close(); } catch { /* ignore */ }
+      reject(new Error("fal.ai Lucy 2.5: connection timed out (30s)"));
+      pc.close();
     }, 30_000);
 
-    ws.onopen = () => {
-      // WebSocket is open; we wait for {type:"iceservers"} before creating the PC
-    };
-
-    ws.onmessage = async (ev) => {
-      let msg: Record<string, unknown>;
-      try { msg = JSON.parse(ev.data as string); } catch { return; }
-
-      if (msg.type === "iceservers" && !offerSent) {
-        // 3. Got ICE servers → build RTCPeerConnection
-        const iceServers = Array.isArray(msg.iceservers) && (msg.iceservers as unknown[]).length > 0
-          ? (msg.iceservers as RTCIceServer[])
-          : DEFAULT_ICE;
-
-        pc = new RTCPeerConnection({ iceServers });
-
-        // Pipe local tracks (video + optional delayed-mic audio)
-        localStream.getTracks().forEach(t => pc!.addTrack(t, localStream));
-
-        // Collect incoming remote tracks into one MediaStream
-        pc.ontrack = (e) => {
-          const src = e.streams[0];
-          if (src) {
-            src.getTracks().forEach(t => {
-              if (!remoteStream.getTrackById(t.id)) remoteStream.addTrack(t);
-            });
-          } else {
-            if (!remoteStream.getTrackById(e.track.id)) remoteStream.addTrack(e.track);
+    // Connect via fal.ai realtime SDK — it handles JWT token internally
+    const connection = fal.realtime.connect("decart/lucy-2-5/realtime", {
+      onResult: async (result: Record<string, unknown>) => {
+        try {
+          if (result.type === "answer" && typeof result.sdp === "string") {
+            // Apply the SDP answer from Lucy 2.5
+            await pc.setRemoteDescription(
+              new RTCSessionDescription({ type: "answer", sdp: result.sdp })
+            );
+          } else if (result.type === "icecandidate" && result.candidate) {
+            // Add ICE candidate from server
+            const c = result.candidate as RTCIceCandidateInit;
+            if (c.candidate) await pc.addIceCandidate(new RTCIceCandidate(c));
           }
-          if (remoteStream.getTracks().length > 0) onRemoteStream(remoteStream);
-        };
-
-        // Trickle ICE — send each candidate as it's gathered
-        pc.onicecandidate = (e) => {
-          if (e.candidate) {
-            sendWs({
-              type: "icecandidate",
-              candidate: {
-                candidate:     e.candidate.candidate,
-                sdpMid:        e.candidate.sdpMid,
-                sdpMLineIndex: e.candidate.sdpMLineIndex,
-              },
-            });
-          }
-        };
-
-        pc.onconnectionstatechange = () => {
-          if (pc!.connectionState === "connected") {
-            clearTimeout(timeout);
-            // Send initial prompt immediately
-            sendWs({
-              type:   "update",
-              prompt: initialPrompt,
-              ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
-            });
-            resolve({ pc: pc!, ws });
-          }
-          if (pc!.connectionState === "failed" || pc!.connectionState === "disconnected") {
-            onDisconnect();
-          }
-        };
-
-        // 4 & 5. Create offer + send over WebSocket (trickle — send immediately)
-        offerSent = true;
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        sendWs({ type: "offer", sdp: pc.localDescription!.sdp });
-
-      } else if (msg.type === "answer" && typeof msg.sdp === "string" && pc) {
-        // 6. Set remote description
-        await pc.setRemoteDescription(
-          new RTCSessionDescription({ type: "answer", sdp: msg.sdp })
-        );
-
-      } else if (msg.type === "icecandidate" && pc) {
-        // 7. Add server ICE candidates
-        const c = msg.candidate as { candidate: string; sdpMid: string; sdpMLineIndex: number } | null;
-        if (c?.candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate({
-            candidate:     c.candidate,
-            sdpMid:        c.sdpMid,
-            sdpMLineIndex: c.sdpMLineIndex,
-          }));
+        } catch (e) {
+          reject(e instanceof Error ? e : new Error(String(e)));
         }
-
-      } else if (msg.type === "error") {
+      },
+      onError: (err: Error) => {
         clearTimeout(timeout);
-        reject(new Error(`fal.ai error: ${msg.error ?? JSON.stringify(msg)}`));
-        try { ws.close(); } catch { /* ignore */ }
+        reject(err);
+      },
+    } as Parameters<typeof fal.realtime.connect>[1]) as FalRealtimeConnection;
+
+    // Trickle ICE — forward our candidates to the server
+    pc.onicecandidate = (ev) => {
+      if (ev.candidate) {
+        connection.send({
+          type: "icecandidate",
+          candidate: {
+            candidate:     ev.candidate.candidate,
+            sdpMid:        ev.candidate.sdpMid,
+            sdpMLineIndex: ev.candidate.sdpMLineIndex,
+          },
+        });
       }
     };
 
-    ws.onerror = () => {
-      clearTimeout(timeout);
-      reject(new Error("fal.ai WebSocket connection error"));
-    };
-
-    ws.onclose = (ev) => {
-      if (!offerSent) {
+    // Fire resolve once WebRTC is fully connected
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") {
         clearTimeout(timeout);
-        reject(new Error(`fal.ai WebSocket closed early (code ${ev.code})`));
+        // Send initial prompt
+        connection.send({
+          prompt: initialPrompt,
+          ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
+        });
+        resolve({ connection, pc });
+      }
+      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+        clearTimeout(timeout);
+        onDisconnect();
       }
     };
+
+    // Create and send our SDP offer
+    pc.createOffer()
+      .then(offer => pc.setLocalDescription(offer))
+      .then(() => {
+        connection.send({
+          type: "offer",
+          sdp:  pc.localDescription!.sdp,
+        });
+      })
+      .catch(err => {
+        clearTimeout(timeout);
+        reject(err);
+      });
   });
 }
 
-function falEndSession(session: FalSession) {
-  try { session.ws.close(); }  catch { /* ignore */ }
-  try { session.pc.close(); }  catch { /* ignore */ }
+function endFalSession(session: FalSession) {
+  try { session.connection.close(); } catch { /* ignore */ }
+  try { session.pc.close(); }         catch { /* ignore */ }
 }
 
-function falSendPrompt(session: FalSession, prompt: string, refImageB64?: string | null) {
-  if (session.ws.readyState !== WebSocket.OPEN) return;
-  session.ws.send(JSON.stringify({
-    type:   "update",
-    prompt,
-    ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
-  }));
+function sendPromptUpdate(session: FalSession, prompt: string, refImageB64?: string | null) {
+  try {
+    session.connection.send({
+      prompt,
+      ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
+    });
+  } catch { /* ignore */ }
 }
 
 // ─── Popup helpers ────────────────────────────────────────────────────────────
-function getBaseUrl(): string { return window.location.href.split("#")[0]; }
+function getBaseUrl() { return window.location.href.split("#")[0]; }
 function notifyPopup(w: Window | null) {
   if (w && !w.closed) {
     try { w.postMessage({ type: "stream-studio-stream" }, "*"); } catch { /* ignore */ }
@@ -368,8 +316,8 @@ export default function StreamPage() {
   const [refImageB64, setRefImageB64]         = useState<string|null>(null);
   const [refImagePreview, setRefImagePreview] = useState<string|null>(null);
 
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isPopoutOpen, setIsPopoutOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen]       = useState(false);
+  const [isPopoutOpen, setIsPopoutOpen]       = useState(false);
   const [isObsModeActive, setIsObsModeActive] = useState(false);
   const [obsInstructions, setObsInstructions] = useState(false);
 
@@ -413,7 +361,7 @@ export default function StreamPage() {
       setCameraReady(true);
       enumerateCameras();
     } catch {
-      toast({ title: "Camera Error", description: "Could not access your camera. Check browser permissions.", variant: "destructive" });
+      toast({ title: "Camera Error", description: "Could not access your camera.", variant: "destructive" });
     }
   }, [selectedCameraId, enumerateCameras, toast]);
 
@@ -426,26 +374,17 @@ export default function StreamPage() {
   const teardownStream = useCallback(async () => {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     isStartingRef.current = false;
-
-    if (falSessionRef.current) {
-      falEndSession(falSessionRef.current);
-      falSessionRef.current = null;
-    }
-
-    syncEngineRef.current?.stop();
-    syncEngineRef.current = null;
-
+    if (falSessionRef.current) { endFalSession(falSessionRef.current); falSessionRef.current = null; }
+    syncEngineRef.current?.stop(); syncEngineRef.current = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     remoteStreamRef.current = null;
     window.__ssRemoteStream = null;
-
     if (popoutRef.current && !popoutRef.current.closed) {
       try { popoutRef.current.postMessage("stream-studio-clear", "*"); } catch { /* ignore */ }
     }
     if (obsWindowRef.current && !obsWindowRef.current.closed) {
       try { obsWindowRef.current.postMessage("stream-studio-clear", "*"); } catch { /* ignore */ }
     }
-
     sessionEnd();
     setIsStreaming(false); setConnectionStatus("idle");
     setConnectionStep(null); setElapsedSecs(0);
@@ -468,35 +407,31 @@ export default function StreamPage() {
     setConnectionStatus("connecting");
 
     try {
-      // Step 1: start audio sync engine
       setConnectionStep("engine");
       const style  = STYLES.find(s => s.id === selectedStyle)!;
       const prompt = customPrompt.trim() || style.prompt;
 
+      // Start audio sync engine
       const engine = new AutoSyncEngine();
       engine.onUpdate = (delay, vu) => { setSyncDelay(delay); setVuLevel(vu); };
       const audioDest = await engine.start(remoteVideoRef.current!);
       syncEngineRef.current = engine;
 
-      // Build the stream we send — video from webcam + optionally delayed mic
+      // Build send stream: webcam video + delayed mic audio
       let sendStream = localStreamRef.current;
       if (audioDest) {
         const audioTrack = audioDest.stream.getAudioTracks()[0];
         if (audioTrack) {
-          sendStream = new MediaStream([
-            ...localStreamRef.current.getVideoTracks(),
-            audioTrack,
-          ]);
+          sendStream = new MediaStream([...localStreamRef.current.getVideoTracks(), audioTrack]);
           setAudioActive(true);
         }
       }
 
-      // Step 2: connect to fal.ai WMA bridge
-      const session = await falStartSession(
+      // Connect to fal.ai Lucy 2.5
+      const session = await startFalSession(
         apiKey,
         sendStream,
         (remote) => {
-          // Remote AI stream arrived
           remoteStreamRef.current = remote;
           if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
           window.__ssRemoteStream = remote;
@@ -505,7 +440,6 @@ export default function StreamPage() {
           setConnectionStatus("connected");
         },
         () => {
-          // Disconnected / failed
           teardownStream();
           toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" });
         },
@@ -514,17 +448,13 @@ export default function StreamPage() {
       );
 
       falSessionRef.current = session;
-
       sessionStart();
       const t0 = Date.now();
       timerRef.current = setInterval(() => {
         const s = Math.floor((Date.now() - t0) / 1000);
-        setElapsedSecs(s);
-        sessionTick(s);
+        setElapsedSecs(s); sessionTick(s);
       }, 1000);
-
       setIsStreaming(true);
-      // connectionStatus will flip to "connected" once onRemoteStream fires
 
     } catch (err) {
       teardownStream();
@@ -541,25 +471,21 @@ export default function StreamPage() {
 
   const handleStopStream = useCallback(() => teardownStream(), [teardownStream]);
 
-  // ─── Live prompt update while streaming ──────────────────────────────────
-  // Send updated prompt whenever the user changes style / custom prompt mid-stream
+  // ─── Live prompt updates ──────────────────────────────────────────────────
   const handlePromptChange = useCallback((newPrompt: string) => {
-    if (falSessionRef.current && isStreaming) {
-      falSendPrompt(falSessionRef.current, newPrompt, refImageB64);
-    }
+    if (falSessionRef.current && isStreaming) sendPromptUpdate(falSessionRef.current, newPrompt, refImageB64);
   }, [isStreaming, refImageB64]);
 
   const handleStyleSelect = useCallback((id: StyleId) => {
     setSelectedStyle(id);
     const style  = STYLES.find(s => s.id === id)!;
-    const prompt = customPrompt.trim() || style.prompt;
-    handlePromptChange(prompt);
+    handlePromptChange(customPrompt.trim() || style.prompt);
   }, [customPrompt, handlePromptChange]);
 
   const handleCustomPromptChange = useCallback((val: string) => {
     setCustomPrompt(val);
     if (isStreaming) {
-      const style  = STYLES.find(s => s.id === selectedStyle)!;
+      const style = STYLES.find(s => s.id === selectedStyle)!;
       handlePromptChange(val.trim() || style.prompt);
     }
   }, [isStreaming, selectedStyle, handlePromptChange]);
@@ -569,18 +495,15 @@ export default function StreamPage() {
     const file = e.target.files?.[0]; if (!file) return;
     const r = new FileReader();
     r.onload = ev => {
-      const data  = ev.target?.result as string;
-      const b64   = data.split(",")[1] ?? data;
-      setRefImagePreview(data);
-      setRefImageB64(b64);
+      const data = ev.target?.result as string;
+      const b64  = data.split(",")[1] ?? data;
+      setRefImagePreview(data); setRefImageB64(b64);
       if (falSessionRef.current && isStreaming) {
-        const style  = STYLES.find(s => s.id === selectedStyle)!;
-        const prompt = customPrompt.trim() || style.prompt;
-        falSendPrompt(falSessionRef.current, prompt, b64);
+        const style = STYLES.find(s => s.id === selectedStyle)!;
+        sendPromptUpdate(falSessionRef.current, customPrompt.trim() || style.prompt, b64);
       }
     };
-    r.readAsDataURL(file);
-    e.target.value = "";
+    r.readAsDataURL(file); e.target.value = "";
   }, [isStreaming, selectedStyle, customPrompt]);
 
   // ─── Popout windows ───────────────────────────────────────────────────────
@@ -588,50 +511,37 @@ export default function StreamPage() {
     if (popoutRef.current && !popoutRef.current.closed) { popoutRef.current.focus(); return; }
     const w = window.open(getBaseUrl() + "#/popout", "ss-popout", "width=1280,height=720,menubar=no,toolbar=no,location=no");
     if (!w) return;
-    popoutRef.current = w;
-    setIsPopoutOpen(true);
+    popoutRef.current = w; setIsPopoutOpen(true);
     w.addEventListener("load", () => notifyPopup(w));
-    const chk = setInterval(() => {
-      if (w.closed) { clearInterval(chk); setIsPopoutOpen(false); popoutRef.current = null; }
-    }, 1000);
+    const chk = setInterval(() => { if (w.closed) { clearInterval(chk); setIsPopoutOpen(false); popoutRef.current = null; } }, 1000);
   }, []);
 
   const openObsWindow = useCallback(() => {
     if (obsWindowRef.current && !obsWindowRef.current.closed) { obsWindowRef.current.focus(); return; }
     const w = window.open(getBaseUrl() + "#/obsout", "ss-obsout", "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no");
     if (!w) return;
-    obsWindowRef.current = w;
-    setIsObsModeActive(true);
-    setObsInstructions(true);
+    obsWindowRef.current = w; setIsObsModeActive(true); setObsInstructions(true);
     w.addEventListener("load", () => notifyPopup(w));
-    const chk = setInterval(() => {
-      if (w.closed) { clearInterval(chk); setIsObsModeActive(false); setObsInstructions(false); obsWindowRef.current = null; }
-    }, 1000);
+    const chk = setInterval(() => { if (w.closed) { clearInterval(chk); setIsObsModeActive(false); setObsInstructions(false); obsWindowRef.current = null; } }, 1000);
   }, []);
 
   const closeObsWindow = useCallback(() => {
     if (obsWindowRef.current && !obsWindowRef.current.closed) obsWindowRef.current.close();
-    obsWindowRef.current = null;
-    setIsObsModeActive(false);
-    setObsInstructions(false);
+    obsWindowRef.current = null; setIsObsModeActive(false); setObsInstructions(false);
   }, []);
 
   const closePopout = useCallback(() => {
     if (popoutRef.current && !popoutRef.current.closed) popoutRef.current.close();
-    popoutRef.current = null;
-    setIsPopoutOpen(false);
+    popoutRef.current = null; setIsPopoutOpen(false);
   }, []);
 
   const closeAllPopups = useCallback(() => { closePopout(); closeObsWindow(); }, [closePopout, closeObsWindow]);
 
-  // ─── Message listener (from popout windows) ───────────────────────────────
+  // ─── Message listener ─────────────────────────────────────────────────────
   useEffect(() => {
     const h = (e: MessageEvent) => {
       if (e.data === "stream-studio-stop") teardownStream();
-      else if (e.data === "stream-studio-reconnect" && cameraReady) {
-        teardownStream();
-        setTimeout(() => handleStartStream(), 300);
-      }
+      else if (e.data === "stream-studio-reconnect" && cameraReady) { teardownStream(); setTimeout(() => handleStartStream(), 300); }
     };
     window.addEventListener("message", h);
     return () => window.removeEventListener("message", h);
@@ -642,9 +552,7 @@ export default function StreamPage() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (isFullscreen) { teardownStream(); setIsFullscreen(false); return; }
-        closeAllPopups();
-        if (isStreaming) teardownStream();
-        return;
+        closeAllPopups(); if (isStreaming) teardownStream(); return;
       }
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
@@ -656,9 +564,10 @@ export default function StreamPage() {
 
   const style = STYLES.find(s => s.id === selectedStyle)!;
 
+  // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <AppLayout>
-      {/* ── Missing credentials banner ───────────────────────────────────── */}
+      {/* Missing credentials banner */}
       {credsMissing && (
         <div style={{ margin: "16px 32px 0", padding: "12px 18px", borderRadius: 10, background: "hsl(40 100% 52% / 0.1)", border: "1px solid hsl(40 100% 52% / 0.35)", display: "flex", alignItems: "center", gap: 12 }}>
           <Settings style={{ width: 16, height: 16, color: "hsl(40 100% 62%)", flexShrink: 0 }} />
@@ -671,7 +580,7 @@ export default function StreamPage() {
         </div>
       )}
 
-      {/* ── Starting overlay ──────────────────────────────────────────────── */}
+      {/* Starting overlay */}
       {isStarting && (
         <div style={{ position: "fixed", inset: 0, zIndex: 55, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ position: "absolute", inset: 0, backdropFilter: "blur(8px)", background: "hsl(222 47% 4% / 0.88)" }} />
@@ -682,14 +591,12 @@ export default function StreamPage() {
             <div>
               <h3 style={{ fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 16, letterSpacing: "0.06em", color: "hsl(190 80% 96%)", marginBottom: 8 }}>Starting Stream…</h3>
               <p style={{ fontSize: 13, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>
-                {connectionStep === "engine"
-                  ? "2/2 · Connecting to fal.ai Lucy 2.5…"
-                  : "1/2 · Validating API Key…"}
+                {connectionStep === "engine" ? "2/2 · Connecting to fal.ai Lucy 2.5…" : "1/2 · Validating API Key…"}
               </p>
             </div>
             <div style={{ display: "flex", gap: 8, width: "100%", padding: "0 8px" }}>
-              {["auth", "engine"].map((step, i) => {
-                const idx = ["auth", "engine"].indexOf(connectionStep ?? "auth");
+              {["auth","engine"].map((step, i) => {
+                const idx = ["auth","engine"].indexOf(connectionStep ?? "auth");
                 return <div key={step} style={{ flex: 1, height: 4, borderRadius: 2, transition: "all 0.5s", background: i < idx ? C : i === idx ? "hsl(187 100% 52% / 0.45)" : "hsl(222 40% 14%)" }} />;
               })}
             </div>
@@ -700,15 +607,13 @@ export default function StreamPage() {
         </div>
       )}
 
-      {/* ── Fullscreen overlay (F key) ────────────────────────────────────── */}
+      {/* Fullscreen overlay */}
       {isFullscreen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 9000, background: "#000", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <video autoPlay playsInline
-            ref={(el) => { if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current; }}
-            style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)", display: "block" }}
-          />
+          <video autoPlay playsInline ref={(el) => { if (el && remoteStreamRef.current) el.srcObject = remoteStreamRef.current; }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)", display: "block" }} />
           <button onClick={() => { teardownStream(); setIsFullscreen(false); }} title="Stop stream & exit fullscreen (Esc)"
-            style={{ position: "absolute", top: 16, left: 16, zIndex: 10, width: 36, height: 36, borderRadius: "50%", background: "rgba(220,38,38,0.85)", border: "1px solid rgba(255,100,100,0.4)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 12px rgba(0,0,0,0.5)" }}>
+            style={{ position: "absolute", top: 16, left: 16, zIndex: 10, width: 36, height: 36, borderRadius: "50%", background: "rgba(220,38,38,0.85)", border: "1px solid rgba(255,100,100,0.4)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
             <X style={{ width: 16, height: 16 }} />
           </button>
           {isStreaming && (
@@ -734,22 +639,14 @@ export default function StreamPage() {
           )}
         </div>
 
-        {/* Main grid */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 316px", gap: 20 }}>
-
-          {/* ── Left column ────────────────────────────────────────────────── */}
+          {/* Left column */}
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-            {/* AI Output video panel */}
-            <div style={{
-              position: "relative", width: "100%", aspectRatio: "16/9",
-              borderRadius: 14, overflow: "hidden", background: "#000",
-              boxShadow: connectionStatus === "connected"
-                ? "0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)"
-                : "0 0 0 1px hsl(222 40% 14%)",
-            }}>
+            {/* AI Output panel */}
+            <div style={{ position: "relative", width: "100%", aspectRatio: "16/9", borderRadius: 14, overflow: "hidden", background: "#000",
+              boxShadow: connectionStatus === "connected" ? "0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)" : "0 0 0 1px hsl(222 40% 14%)" }}>
               <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transform: "scaleX(-1)" }} />
-
               {connectionStatus === "idle" && (
                 <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, background: "radial-gradient(ellipse at center, hsl(222 44% 8%) 0%, hsl(222 47% 4%) 100%)" }}>
                   <div style={{ width: 72, height: 72, borderRadius: "50%", background: "hsl(187 100% 52% / 0.08)", border: "2px solid hsl(187 100% 52% / 0.2)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -762,12 +659,11 @@ export default function StreamPage() {
                 </div>
               )}
 
-              {/* Top-right action buttons */}
+              {/* Top-right buttons */}
               <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
-                {/* OBS clean window */}
                 <div style={{ position: "relative" }}>
-                  <button onClick={isObsModeActive ? closeObsWindow : openObsWindow} title={isObsModeActive ? "Close OBS window" : "Open clean OBS output window"}
-                    style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff", border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer", boxShadow: isObsModeActive ? "0 0 12px rgba(0,210,211,0.4)" : "none" }}>
+                  <button onClick={isObsModeActive ? closeObsWindow : openObsWindow}
+                    style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff", border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer" }}>
                     <Monitor style={{ width: 11, height: 11 }} /> OBS
                   </button>
                   {obsInstructions && (
@@ -776,28 +672,22 @@ export default function StreamPage() {
                         <span style={{ fontSize: 10, fontWeight: 700, color: C, fontFamily: "monospace", letterSpacing: 1 }}>● OBS WINDOW OPEN</span>
                         <button onClick={() => setObsInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
                       </div>
-                      <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>
-                        Clean output window is open. In OBS → Sources → + → Window Capture → select "Stream Studio OBS".
-                      </p>
+                      <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>In OBS → Sources → + → Window Capture → select "Stream Studio OBS".</p>
                     </div>
                   )}
                 </div>
-
-                {/* Regular popout */}
-                <button onClick={isPopoutOpen ? closePopout : openPopout} title={isPopoutOpen ? "Close popout" : "Open popout window"}
+                <button onClick={isPopoutOpen ? closePopout : openPopout}
                   style={{ width: 30, height: 30, borderRadius: "50%", background: isPopoutOpen ? "rgba(0,210,211,0.85)" : "rgba(0,0,0,0.6)", border: isPopoutOpen ? "1px solid rgba(0,210,211,0.5)" : "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Monitor style={{ width: 13, height: 13 }} />
                 </button>
-
-                {/* Fullscreen */}
-                <button onClick={() => setIsFullscreen(v => !v)} title="Fullscreen AI output (F)"
+                <button onClick={() => setIsFullscreen(v => !v)} title="Fullscreen (F)"
                   style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <Maximize2 style={{ width: 13, height: 13 }} />
                 </button>
               </div>
 
-              {/* PiP local camera */}
-              <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000", boxShadow: "0 4px 20px rgba(0,0,0,0.6)" }}>
+              {/* PiP camera */}
+              <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000" }}>
                 <video ref={localVideoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
                 {!cameraReady && (
                   <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
@@ -805,7 +695,7 @@ export default function StreamPage() {
                     <button onClick={() => startCamera()} style={{ fontSize: 10, color: C, fontWeight: 700, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>Enable Camera</button>
                   </div>
                 )}
-                <div style={{ position: "absolute", bottom: 3, left: 4, right: 4, background: "rgba(0,0,0,0.7)", borderRadius: 4, fontSize: 8, color: "rgba(255,255,255,0.6)", fontFamily: "monospace", padding: "1px 4px", letterSpacing: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <div style={{ position: "absolute", bottom: 3, left: 4, right: 4, background: "rgba(0,0,0,0.7)", borderRadius: 4, fontSize: 8, color: "rgba(255,255,255,0.6)", fontFamily: "monospace", padding: "1px 4px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   INPUT{cameras.length && selectedCameraId ? ` · ${cameras.find(c => c.deviceId === selectedCameraId)?.label || "Camera"}` : ""}
                 </div>
               </div>
@@ -842,18 +732,17 @@ export default function StreamPage() {
             {/* Stream button */}
             {isStreaming ? (
               <button onClick={handleStopStream}
-                style={{ width: "100%", height: 54, background: "hsl(0 85% 40% / 0.3)", border: "1px solid hsl(0 85% 55% / 0.5)", borderRadius: 12, cursor: "pointer", color: "hsl(0 85% 75%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.2s" }}
+                style={{ width: "100%", height: 54, background: "hsl(0 85% 40% / 0.3)", border: "1px solid hsl(0 85% 55% / 0.5)", borderRadius: 12, cursor: "pointer", color: "hsl(0 85% 75%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
                 onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.5)"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.3)"; }}>
                 <Square style={{ width: 18, height: 18 }} /> Stop Stream
               </button>
             ) : (
               <button onClick={handleStartStream} disabled={isStarting || !cameraReady}
-                style={{ width: "100%", height: 54, background: (!isStarting && cameraReady && !credsMissing) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (!isStarting && cameraReady && !credsMissing) ? "pointer" : "not-allowed", color: (!isStarting && cameraReady && !credsMissing) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (!isStarting && cameraReady && !credsMissing) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none", transition: "all 0.2s" }}
+                style={{ width: "100%", height: 54, background: (!isStarting && cameraReady && !credsMissing) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (!isStarting && cameraReady && !credsMissing) ? "pointer" : "not-allowed", color: (!isStarting && cameraReady && !credsMissing) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (!isStarting && cameraReady && !credsMissing) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none" }}
                 onMouseEnter={e => { if (!isStarting && cameraReady && !credsMissing) (e.currentTarget as HTMLElement).style.filter = "brightness(1.1)"; }}
                 onMouseLeave={e => { (e.currentTarget as HTMLElement).style.filter = "none"; }}>
-                {isStarting
-                  ? <><Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> Starting…</>
+                {isStarting ? <><Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> Starting…</>
                   : credsMissing ? <><Settings style={{ width: 18, height: 18 }} /> Open Settings to Set Key</>
                   : !cameraReady ? <><Camera style={{ width: 18, height: 18 }} /> Enable Camera First</>
                   : <><Play style={{ width: 18, height: 18 }} /> Stream Now</>}
@@ -867,12 +756,7 @@ export default function StreamPage() {
                 <span style={{ fontSize: 12, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em" }}>OBS Setup</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {[
-                  ["1", "Start your stream here first — audio sync is automatic"],
-                  ["2", "Click the OBS button above the video to open a clean output window"],
-                  ["3", "In OBS: Sources → + → Window Capture → select the OBS output window"],
-                  ["4", "No separate mic needed — audio is pre-synced automatically"],
-                ].map(([n, text]) => (
+                {[["1","Start your stream here first — audio sync is automatic"],["2","Click OBS above the video to open a clean output window"],["3","In OBS: Sources → + → Window Capture → select the OBS window"],["4","No separate mic needed — audio is pre-synced automatically"]].map(([n, text]) => (
                   <div key={n} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                     <span style={{ width: 18, height: 18, borderRadius: "50%", flexShrink: 0, background: "hsl(187 100% 52% / 0.15)", color: C, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{n}</span>
                     <p style={{ fontSize: 12, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5 }}>{text}</p>
@@ -882,7 +766,7 @@ export default function StreamPage() {
             </div>
           </div>
 
-          {/* ── Right sidebar ───────────────────────────────────────────────── */}
+          {/* Right sidebar */}
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
             {/* Style presets */}
@@ -891,7 +775,7 @@ export default function StreamPage() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                 {STYLES.map(s => (
                   <button key={s.id} onClick={() => handleStyleSelect(s.id)}
-                    style={{ padding: "7px 4px", borderRadius: 8, cursor: "pointer", background: selectedStyle === s.id ? `${s.color}22` : "hsl(222 40% 8%)", border: `1px solid ${selectedStyle === s.id ? s.color + "66" : "hsl(222 40% 12%)"}`, color: selectedStyle === s.id ? s.color : "hsl(222 25% 55%)", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", fontFamily: "'Orbitron',monospace", transition: "all 0.15s", boxShadow: selectedStyle === s.id ? `0 0 12px ${s.color}33` : "none" }}>
+                    style={{ padding: "7px 4px", borderRadius: 8, cursor: "pointer", background: selectedStyle === s.id ? `${s.color}22` : "hsl(222 40% 8%)", border: `1px solid ${selectedStyle === s.id ? s.color + "66" : "hsl(222 40% 12%)"}`, color: selectedStyle === s.id ? s.color : "hsl(222 25% 55%)", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em", fontFamily: "'Orbitron',monospace", boxShadow: selectedStyle === s.id ? `0 0 12px ${s.color}33` : "none" }}>
                     {s.label}
                   </button>
                 ))}
@@ -912,15 +796,13 @@ export default function StreamPage() {
               )}
             </div>
 
-            {/* Auto Audio Sync */}
+            {/* Audio Sync */}
             <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 16 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
                 <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace" }}>Audio Sync</p>
                 <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "3px 9px", borderRadius: 20, background: audioActive ? "hsl(187 100% 52% / 0.12)" : "hsl(222 40% 9%)", border: `1px solid ${audioActive ? "hsl(187 100% 52% / 0.35)" : "hsl(222 40% 14%)"}` }}>
                   {audioActive ? <Wifi style={{ width: 10, height: 10, color: C }} /> : <WifiOff style={{ width: 10, height: 10, color: "hsl(222 25% 40%)" }} />}
-                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em", color: audioActive ? C : "hsl(222 25% 40%)" }}>
-                    {audioActive ? "AUTO" : "IDLE"}
-                  </span>
+                  <span style={{ fontSize: 9, fontWeight: 700, fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em", color: audioActive ? C : "hsl(222 25% 40%)" }}>{audioActive ? "AUTO" : "IDLE"}</span>
                 </div>
               </div>
               {audioActive ? (
@@ -938,13 +820,10 @@ export default function StreamPage() {
                     <span style={{ fontSize: 12, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif" }}>Detected Delay</span>
                     <span style={{ fontSize: 14, fontWeight: 700, color: C, fontFamily: "'Orbitron',monospace" }}>{syncDelay.toFixed(2)}s</span>
                   </div>
-                  <p style={{ fontSize: 11, color: "hsl(222 25% 40%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5 }}>
-                    Continuously measuring audio-to-video latency via signal cross-correlation and adjusting in real time.
-                  </p>
                 </div>
               ) : (
                 <p style={{ fontSize: 12, color: "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.5 }}>
-                  When you click <strong style={{ color: "hsl(190 80% 80%)" }}>Stream Now</strong>, your default microphone is automatically detected and the audio delay is calibrated to match the AI video in real time.
+                  When you click <strong style={{ color: "hsl(190 80% 80%)" }}>Stream Now</strong>, your mic is detected and audio delay is calibrated automatically.
                 </p>
               )}
             </div>
@@ -960,7 +839,7 @@ export default function StreamPage() {
                   </button>
                 </div>
               ) : (
-                <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "18px 12px", borderRadius: 10, cursor: "pointer", background: "hsl(222 40% 8%)", border: "1px dashed hsl(222 40% 16%)", transition: "all 0.2s" }}
+                <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "18px 12px", borderRadius: 10, cursor: "pointer", background: "hsl(222 40% 8%)", border: "1px dashed hsl(222 40% 16%)" }}
                   onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = "hsl(187 100% 52% / 0.4)"; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = "hsl(222 40% 16%)"; }}>
                   <Image style={{ width: 22, height: 22, color: "hsl(222 25% 40%)" }} />
@@ -974,10 +853,7 @@ export default function StreamPage() {
             <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 14 }}>
               <p style={{ fontSize: 10, fontWeight: 700, color: "hsl(222 25% 40%)", textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace", marginBottom: 10 }}>Shortcuts</p>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {[
-                  ["F", "Fullscreen AI output (in-app overlay)"],
-                  ["Esc", "Stop stream & exit fullscreen"],
-                ].map(([key, desc]) => (
+                {[["F","Fullscreen AI output"],["Esc","Stop stream & exit"]].map(([key, desc]) => (
                   <div key={key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <kbd style={{ padding: "2px 7px", borderRadius: 5, background: "hsl(222 40% 9%)", border: "1px solid hsl(222 40% 16%)", color: "hsl(190 80% 90%)", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}>{key}</kbd>
                     <span style={{ fontSize: 11, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif" }}>{desc}</span>
