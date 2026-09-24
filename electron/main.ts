@@ -171,7 +171,7 @@ ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) =>
       "Authorization": `Key ${rawKey}`,
     },
     body: JSON.stringify({
-      allowed_apps: [appId],
+      allowed_apps: ["lucy-2-5"],
       token_expiration: 60,
     }),
   });

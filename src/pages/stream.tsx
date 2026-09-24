@@ -160,7 +160,7 @@ async function getFalToken(apiKey: string): Promise<string> {
   const res = await fetch(FAL_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Key ${rawKey}` },
-    body: JSON.stringify({ allowed_apps: [FAL_APP_ID], token_expiration: 60 }),
+    body: JSON.stringify({ allowed_apps: ["lucy-2-5"], token_expiration: 60 }),
   });
   if (!res.ok) throw new Error(`fal.ai token failed (${res.status}): ${await res.text().catch(() => "")}`);
   const data = await res.json();
