@@ -333,20 +333,6 @@ function falSendPrompt(session: FalSession, prompt: string, refImageB64?: string
     prompt,
     ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
   }));
-}
-
-function falEndSession(session: WmaSession) {
-  clearInterval(session.hbTimer);
-  try { session.dataChannel.close(); } catch { /* ignore */ }
-  try { session.pc.close(); } catch { /* ignore */ }
-}
-
-function falSendPrompt(session: WmaSession, prompt: string, refImageB64?: string | null) {
-  if (session.dataChannel.readyState !== "open") return;
-  const payload: Record<string, unknown> = { prompt };
-  if (refImageB64) payload.reference_image_url = `data:image/jpeg;base64,${refImageB64}`;
-  session.dataChannel.send(JSON.stringify(payload));
-}
 
 // ─── Popup helpers ────────────────────────────────────────────────────────────
 function getBaseUrl(): string { return window.location.href.split("#")[0]; }
