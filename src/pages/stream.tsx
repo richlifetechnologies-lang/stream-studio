@@ -9,7 +9,6 @@ import {
   RefreshCw, ChevronDown, Image, Loader2, X,
   Settings, Mic, Wifi, WifiOff,
 } from "lucide-react";
-import { fal } from "@fal-ai/client";
 
 // ─── Style presets ────────────────────────────────────────────────────────────
 const STYLES = [
@@ -129,22 +128,41 @@ class AutoSyncEngine {
 
 // ─── fal.ai Lucy 2.5 WebRTC engine ───────────────────────────────────────────
 //
-// Lucy 2.5 = fal.ai signaling relay (WebSocket via fal.realtime.connect)
-//            + WebRTC peer connection for actual video/audio media.
+// Raw WebSocket + RTCPeerConnection — NO fal SDK in the signaling path.
+// The fal SDK's realtime.connect() filters messages through isSuccessfulResult()
+// which blocks Lucy's signaling frames (ready/answer/icecandidate) from reaching
+// our code. We use the SDK only to mint the JWT token via IPC, then open a plain
+// WebSocket directly to wss://fal.run/<appId>?fal_jwt_token=<token>.
 //
-// Signaling messages over the fal WebSocket:
-//   Server → client: { type:"ready" }  — create PC, send offer
-//   Server → client: { type:"iceservers", iceServers:[...] }
+// Signaling protocol (Lucy 2.5 / fal WMA):
+//   Server → client: { type:"ready" } or { type:"iceservers", iceServers:[...] }
 //   Server → client: { type:"answer", sdp:"..." }
-//   Both directions:  { type:"icecandidate", candidate:{...} }
-//   Client → server: prompt/reference_image_url updates
-//
-// Auth: tokenProvider mints a short-lived JWT via Electron IPC
-//       (Main Process calls rest.fal.ai/tokens/ with the API key)
+//   Both ways:       { type:"icecandidate", candidate:{...} }
+//   Client → server: { prompt:"...", reference_image_url:"..." }
 
 interface FalSession {
   close(): void;
   send(input: Record<string, unknown>): void;
+}
+
+const FAL_APP_ID = "decart/lucy-2-5/realtime";
+const FAL_TOKEN_URL = "https://rest.fal.ai/tokens/";
+const FAL_WS_URL = `wss://fal.run/${FAL_APP_ID}`;
+
+async function getFalToken(apiKey: string): Promise<string> {
+  // Use Electron IPC if available (key stays in Main Process)
+  const api = (window as unknown as { electronAPI?: { getFalToken?: (k: string, a: string) => Promise<string> } }).electronAPI;
+  if (api?.getFalToken) return api.getFalToken(apiKey, FAL_APP_ID);
+  // Fallback direct fetch (dev / browser context)
+  const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
+  const res = await fetch(FAL_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Key ${rawKey}` },
+    body: JSON.stringify({ allowed_apps: [FAL_APP_ID], token_expiration: 60 }),
+  });
+  if (!res.ok) throw new Error(`fal.ai token failed (${res.status}): ${await res.text().catch(() => "")}`);
+  const data = await res.json();
+  return typeof data === "string" ? data : (data.detail ?? JSON.stringify(data));
 }
 
 async function startFalSession(
@@ -156,23 +174,11 @@ async function startFalSession(
   refImageB64: string | null,
 ): Promise<FalSession> {
 
-  // Token provider — Electron IPC bridge if available, direct fetch fallback
-  const tokenProvider = async (app: string): Promise<string> => {
-    const api = (window as unknown as { electronAPI?: { getFalToken?: (k: string, a: string) => Promise<string> } }).electronAPI;
-    if (api?.getFalToken) return api.getFalToken(apiKey, app);
-    // Fallback (dev / non-Electron)
-    const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
-    const res = await fetch("https://rest.fal.ai/tokens/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Key ${rawKey}` },
-      body: JSON.stringify({ allowed_apps: [app], token_expiration: 60 }),
-    });
-    if (!res.ok) throw new Error(`fal.ai token error (${res.status}): ${await res.text().catch(() => "")}`);
-    const data = await res.json();
-    return typeof data === "string" ? data : (data.detail ?? JSON.stringify(data));
-  };
+  // Step 1: mint JWT
+  const token = await getFalToken(apiKey);
 
-  fal.config({ credentials: apiKey });
+  // Step 2: open raw WebSocket — no SDK filtering
+  const ws = new WebSocket(`${FAL_WS_URL}?fal_jwt_token=${encodeURIComponent(token)}`);
 
   return new Promise<FalSession>((resolve, reject) => {
     let pc: RTCPeerConnection | null = null;
@@ -181,86 +187,125 @@ async function startFalSession(
     let hasRemoteDesc = false;
 
     const timeout = setTimeout(() => {
-      if (!settled) { settled = true; reject(new Error("fal.ai Lucy 2.5: connection timed out (30s)")); }
+      if (!settled) {
+        settled = true;
+        try { ws.close(); } catch { /* ignore */ }
+        reject(new Error("fal.ai Lucy 2.5: connection timed out (30s)"));
+      }
     }, 30_000);
 
-    // fal.realtime.connect handles auth (tokenProvider) + WebSocket lifecycle
-    // encodeMessage/decodeMessage set to JSON since Lucy 2.5 speaks plain JSON
-    const conn = fal.realtime.connect("decart/lucy-2-5/realtime", {
-      tokenProvider,
-      tokenExpirationSeconds: 60,
-      encodeMessage: (msg) => JSON.stringify(msg),
-      decodeMessage: (raw) => {
-        if (typeof raw === "string") return JSON.parse(raw);
-        if (raw instanceof ArrayBuffer) return JSON.parse(new TextDecoder().decode(raw));
-        if (raw instanceof Uint8Array) return JSON.parse(new TextDecoder().decode(raw));
-        return raw;
-      },
+    const sendWs = (msg: Record<string, unknown>) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    };
 
-      onResult: async (msg: unknown) => {
-        const m = msg as Record<string, unknown>;
-        const type = (m.type as string | undefined)?.toLowerCase();
+    ws.onopen = () => {
+      // WebSocket open — wait for server's "ready" or "iceservers" message
+    };
 
-        if (type === "ready" || type === "iceservers") {
-          // Build RTCPeerConnection with server-supplied ICE or fallback
-          const servers = (m.iceServers ?? m.ice_servers ?? m.iceservers) as RTCIceServer[] | undefined;
-          pc = new RTCPeerConnection({ iceServers: servers ?? [{ urls: "stun:stun.l.google.com:19302" }] });
+    ws.onmessage = async (ev) => {
+      let msg: Record<string, unknown>;
+      try { msg = JSON.parse(ev.data as string); } catch { return; }
 
-          // Add local tracks
-          localStream.getTracks().forEach(t => pc!.addTrack(t, localStream));
+      const type = (msg.type as string | undefined)?.toLowerCase();
 
-          // Receive remote AI video
-          pc.ontrack = (ev) => {
-            const stream = ev.streams[0] ?? new MediaStream([ev.track]);
-            onRemoteStream(stream);
-          };
+      // ── Server ready: create RTCPeerConnection ───────────────────────────
+      if ((type === "ready" || type === "iceservers") && !pc) {
+        const iceServers = (
+          (msg.iceServers ?? msg.ice_servers ?? msg.iceservers) as RTCIceServer[] | undefined
+        ) ?? [{ urls: "stun:stun.l.google.com:19302" }];
 
-          // Trickle ICE to server
-          pc.onicecandidate = (ev) => {
-            if (ev.candidate) conn.send({ type: "icecandidate", candidate: { candidate: ev.candidate.candidate, sdpMid: ev.candidate.sdpMid, sdpMLineIndex: ev.candidate.sdpMLineIndex } });
-          };
+        pc = new RTCPeerConnection({ iceServers });
 
-          pc.onconnectionstatechange = () => {
-            if (pc?.connectionState === "failed" || pc?.connectionState === "disconnected") onDisconnect();
-          };
+        // Add webcam + mic tracks
+        localStream.getTracks().forEach(t => pc!.addTrack(t, localStream));
 
-          // Create and send SDP offer
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          conn.send({ type: "offer", sdp: pc.localDescription!.sdp });
-        }
+        // Receive AI video
+        pc.ontrack = (ev) => {
+          const stream = ev.streams[0] ?? new MediaStream([ev.track]);
+          onRemoteStream(stream);
+        };
 
-        else if (type === "answer" && typeof m.sdp === "string" && pc) {
-          await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: m.sdp }));
-          hasRemoteDesc = true;
-          // Flush buffered candidates
-          for (const c of pendingCandidates.splice(0)) await pc.addIceCandidate(new RTCIceCandidate(c));
-          // Resolve as soon as answer is applied — don't wait for connectionState "connected"
-          // which is unreliable in Electron. ICE negotiation continues in background.
-          if (!settled) {
-            settled = true;
-            clearTimeout(timeout);
-            conn.send({ prompt: initialPrompt, ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}) });
-            resolve({ close: () => { try { (conn as { close?: () => void }).close?.(); } catch { /* ignore */ } pc?.close(); }, send: (d) => conn.send(d) });
+        // Trickle our ICE candidates to the server
+        pc.onicecandidate = (ev) => {
+          if (ev.candidate) {
+            sendWs({
+              type: "icecandidate",
+              candidate: {
+                candidate:     ev.candidate.candidate,
+                sdpMid:        ev.candidate.sdpMid,
+                sdpMLineIndex: ev.candidate.sdpMLineIndex,
+              },
+            });
           }
-        }
+        };
 
-        else if (type === "icecandidate" && m.candidate && pc) {
-          const c = m.candidate as RTCIceCandidateInit;
-          if (!hasRemoteDesc) { pendingCandidates.push(c); }
-          else if (c.candidate) { await pc.addIceCandidate(new RTCIceCandidate(c)); }
-        }
+        pc.onconnectionstatechange = () => {
+          if (pc?.connectionState === "failed" || pc?.connectionState === "disconnected") {
+            onDisconnect();
+          }
+        };
 
-        else if (type === "error") {
-          if (!settled) { settled = true; clearTimeout(timeout); reject(new Error(`Lucy signaling error: ${JSON.stringify(m)}`)); }
-        }
-      },
+        // Create offer and send it
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        sendWs({ type: "offer", sdp: pc.localDescription!.sdp });
+      }
 
-      onError: (err: Error) => {
-        if (!settled) { settled = true; clearTimeout(timeout); reject(err); }
-        else onDisconnect();
-      },
-    });
+      // ── SDP answer ────────────────────────────────────────────────────────
+      else if (type === "answer" && typeof msg.sdp === "string" && pc && !hasRemoteDesc) {
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: msg.sdp }));
+        hasRemoteDesc = true;
+        // Flush buffered ICE candidates
+        for (const c of pendingCandidates.splice(0)) {
+          if (c.candidate) await pc.addIceCandidate(new RTCIceCandidate(c));
+        }
+        // Resolve — ICE + media continue in background
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          // Send initial prompt
+          sendWs({
+            prompt: initialPrompt,
+            ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
+          });
+          resolve({
+            close: () => { try { ws.close(); } catch { /* ignore */ } try { pc?.close(); } catch { /* ignore */ } },
+            send:  (d) => sendWs(d),
+          });
+        }
+      }
+
+      // ── ICE candidate from server ─────────────────────────────────────────
+      else if (type === "icecandidate" && msg.candidate && pc) {
+        const c = msg.candidate as RTCIceCandidateInit;
+        if (!hasRemoteDesc) { pendingCandidates.push(c); }
+        else if (c.candidate) { await pc.addIceCandidate(new RTCIceCandidate(c)); }
+      }
+
+      // ── Error from server ─────────────────────────────────────────────────
+      else if (type === "error") {
+        if (!settled) {
+          settled = true; clearTimeout(timeout);
+          reject(new Error(`Lucy signaling error: ${msg.message ?? msg.error ?? JSON.stringify(msg)}`));
+        }
+      }
+    };
+
+    ws.onerror = () => {
+      if (!settled) {
+        settled = true; clearTimeout(timeout);
+        reject(new Error("fal.ai WebSocket connection failed"));
+      }
+    };
+
+    ws.onclose = (ev) => {
+      if (!settled) {
+        settled = true; clearTimeout(timeout);
+        reject(new Error(`fal.ai WebSocket closed before signaling (code ${ev.code})`));
+      } else {
+        onDisconnect();
+      }
+    };
   });
 }
 
