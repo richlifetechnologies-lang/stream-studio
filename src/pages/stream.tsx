@@ -251,6 +251,7 @@ async function startFalSession(
       },
     });
   });
+}
 
 function sendPromptUpdate(session: FalSession, prompt: string, refImageB64?: string | null) {
   try {
