@@ -237,7 +237,6 @@ function createWindow() {
       nodeIntegration: false,
       webSecurity: true,
       allowRunningInsecureContent: false,
-      mediaPlaybackRequiresUserGesture: false,
     },
   });
 
