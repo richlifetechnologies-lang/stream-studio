@@ -201,7 +201,13 @@ async function startFalSession(
     };
 
     ws.onopen = () => {
-      // WebSocket open — wait for server's "ready" or "iceservers" message
+      // Lucy 2.5 requires the initial input to be sent immediately on connect
+      // before it will respond with the "ready" signaling message.
+      // This mirrors exactly what lucy.ts SDK does: transport.connection.send(options.input)
+      sendWs({
+        prompt: initialPrompt,
+        ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
+      });
     };
 
     ws.onmessage = async (ev) => {
@@ -265,11 +271,6 @@ async function startFalSession(
         if (!settled) {
           settled = true;
           clearTimeout(timeout);
-          // Send initial prompt
-          sendWs({
-            prompt: initialPrompt,
-            ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
-          });
           resolve({
             close: () => { try { ws.close(); } catch { /* ignore */ } try { pc?.close(); } catch { /* ignore */ } },
             send:  (d) => sendWs(d),
