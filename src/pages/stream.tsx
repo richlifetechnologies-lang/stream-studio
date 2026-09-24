@@ -333,6 +333,7 @@ function falSendPrompt(session: FalSession, prompt: string, refImageB64?: string
     prompt,
     ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}),
   }));
+}
 
 // ─── Popup helpers ────────────────────────────────────────────────────────────
 function getBaseUrl(): string { return window.location.href.split("#")[0]; }
