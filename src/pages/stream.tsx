@@ -185,9 +185,17 @@ async function startFalSession(
     }, 30_000);
 
     // fal.realtime.connect handles auth (tokenProvider) + WebSocket lifecycle
+    // encodeMessage/decodeMessage set to JSON since Lucy 2.5 speaks plain JSON
     const conn = fal.realtime.connect("decart/lucy-2-5/realtime", {
       tokenProvider,
       tokenExpirationSeconds: 60,
+      encodeMessage: (msg) => JSON.stringify(msg),
+      decodeMessage: (raw) => {
+        if (typeof raw === "string") return JSON.parse(raw);
+        if (raw instanceof ArrayBuffer) return JSON.parse(new TextDecoder().decode(raw));
+        if (raw instanceof Uint8Array) return JSON.parse(new TextDecoder().decode(raw));
+        return raw;
+      },
 
       onResult: async (msg: unknown) => {
         const m = msg as Record<string, unknown>;
@@ -213,11 +221,6 @@ async function startFalSession(
           };
 
           pc.onconnectionstatechange = () => {
-            if (pc?.connectionState === "connected" && !settled) {
-              settled = true; clearTimeout(timeout);
-              conn.send({ prompt: initialPrompt, ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}) });
-              resolve({ close: () => { conn.close?.(); pc?.close(); }, send: (d) => conn.send(d) });
-            }
             if (pc?.connectionState === "failed" || pc?.connectionState === "disconnected") onDisconnect();
           };
 
@@ -232,6 +235,14 @@ async function startFalSession(
           hasRemoteDesc = true;
           // Flush buffered candidates
           for (const c of pendingCandidates.splice(0)) await pc.addIceCandidate(new RTCIceCandidate(c));
+          // Resolve as soon as answer is applied — don't wait for connectionState "connected"
+          // which is unreliable in Electron. ICE negotiation continues in background.
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            conn.send({ prompt: initialPrompt, ...(refImageB64 ? { reference_image_url: `data:image/jpeg;base64,${refImageB64}` } : {}) });
+            resolve({ close: () => { try { (conn as { close?: () => void }).close?.(); } catch { /* ignore */ } pc?.close(); }, send: (d) => conn.send(d) });
+          }
         }
 
         else if (type === "icecandidate" && m.candidate && pc) {
