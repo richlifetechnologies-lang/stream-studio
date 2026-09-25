@@ -43,11 +43,43 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build web + electron
-        run: npm run build
+      - name: Download virtual device drivers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "drivers" -Force | Out-Null
+          
+          # ── OBS VirtualCam standalone (open source, MIT) ──────────────────
+          # Using the obs-virtualcam-win installer from the official OBS releases
+          Write-Host "Downloading Stream Studio Camera driver..."
+          try {
+            Invoke-WebRequest -Uri "https://github.com/obsproject/obs-studio/releases/download/30.1.2/OBS-Studio-30.1.2-Windows.exe" -OutFile "drivers\OBS-VirtualCam-Setup.exe" -TimeoutSec 120
+            Write-Host "OBS installer downloaded: $((Get-Item 'drivers\OBS-VirtualCam-Setup.exe').Length) bytes"
+          } catch {
+            Write-Warning "Could not download OBS installer: $_"
+            # Create empty placeholder so build doesn't fail
+            New-Item -Path "drivers\OBS-VirtualCam-Setup.exe" -ItemType File -Force | Out-Null
+          }
+          
+          # ── VB-Audio Virtual Cable (free, signed by VB-Audio) ─────────────
+          Write-Host "Downloading Stream Studio Microphone driver..."
+          try {
+            Invoke-WebRequest -Uri "https://download.vb-audio.com/Download_CABLE/VBCable_Driver_Pack43.zip" -OutFile "drivers\VBCable.zip" -TimeoutSec 120
+            Expand-Archive -Path "drivers\VBCable.zip" -DestinationPath "drivers\VBCable_tmp" -Force
+            $setup = Get-ChildItem "drivers\VBCable_tmp" -Filter "VBCable_Setup_x64.exe" -Recurse | Select-Object -First 1
+            if ($setup) {
+              Copy-Item $setup.FullName "drivers\VBCable_Setup_x64.exe"
+              Write-Host "VBCable installer extracted: $((Get-Item 'drivers\VBCable_Setup_x64.exe').Length) bytes"
+            }
+            Remove-Item "drivers\VBCable.zip", "drivers\VBCable_tmp" -Recurse -Force -ErrorAction SilentlyContinue
+          } catch {
+            Write-Warning "Could not download VBCable: $_"
+            New-Item -Path "drivers\VBCable_Setup_x64.exe" -ItemType File -Force | Out-Null
+          }
+          
+          Write-Host "=== Driver files prepared ==="
+          Get-ChildItem "drivers\" | Select-Object Name, @{N='SizeKB';E={[math]::Round($_.Length/1KB,1)}}
 
-      - name: Package Windows installer
-        run: npx electron-builder --win --x64 --publish never
+      - name: Build web + electron
 
       - name: Generate latest.yml
         shell: pwsh

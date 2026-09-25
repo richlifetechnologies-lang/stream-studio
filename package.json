@@ -1,6 +1,6 @@
 {
   "name": "stream-studio",
-  "version": "1.18.1",
+  "version": "1.19.0",
   "description": "Real-time AI webcam transformation powered by fal.ai Lucy 2.5",
   "main": "dist-electron/main.js",
   "author": "Rich Life Technologies",
@@ -61,6 +61,13 @@
       "dist/**/*",
       "dist-electron/**/*"
     ],
+    "extraFiles": [
+      {
+        "from": "drivers",
+        "to": "drivers",
+        "filter": ["*.exe", "*.nsh", "*.md"]
+      }
+    ],
     "extraMetadata": {
       "main": "dist-electron/main.js"
     },
@@ -85,7 +92,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Stream Studio",
-      "displayLanguageSelector": false
+      "displayLanguageSelector": false,
+      "include": "drivers/install-drivers.nsh",
+      "warningsAsErrors": false
     },
     "mac": {
       "target": [

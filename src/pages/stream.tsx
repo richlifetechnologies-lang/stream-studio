@@ -19,10 +19,31 @@ const APP = "Stream Studio";
 
 // ─── Tab definitions ──────────────────────────────────────────────────────────
 type TabId = "video-audio" | "audio-only" | "video-only";
-const TABS: { id: TabId; label: string; sub: string; Icon: typeof Video }[] = [
-  { id: "video-audio", label: "Video + Audio",  sub: "AI video with voice cloning", Icon: VideoIcon },
-  { id: "audio-only",  label: "Audio Call",     sub: "Voice cloning only",          Icon: Headphones },
-  { id: "video-only",  label: "Video Call",     sub: "AI video, natural voice",     Icon: Video },
+const TABS: { id: TabId; label: string; sub: string; Icon: typeof Video; color: string; glow: string }[] = [
+  {
+    id: "video-audio",
+    label: "Video + Audio",
+    sub: "AI video with voice cloning",
+    Icon: VideoIcon,
+    color: "hsl(187 100% 52%)",       // cyan
+    glow:  "hsl(187 100% 52% / 0.25)",
+  },
+  {
+    id: "audio-only",
+    label: "Audio Call",
+    sub: "Voice cloning only",
+    Icon: Headphones,
+    color: "hsl(265 90% 65%)",        // purple
+    glow:  "hsl(265 90% 65% / 0.25)",
+  },
+  {
+    id: "video-only",
+    label: "Video Call",
+    sub: "AI video, natural voice",
+    Icon: Video,
+    color: "hsl(35 100% 55%)",        // amber/orange
+    glow:  "hsl(35 100% 55% / 0.25)",
+  },
 ];
 
 // ─── Style presets ────────────────────────────────────────────────────────────
@@ -1141,24 +1162,58 @@ export default function StreamPage() {
         </div>
 
         {/* ── 3 TABS ─────────────────────────────────────────────────────── */}
-        <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "hsl(222 44% 5%)", padding: 4, borderRadius: 14, border: "1px solid hsl(222 40% 10%)" }}>
+        <div style={{ display: "flex", gap: 6, marginBottom: 24, background: "hsl(222 44% 5%)", padding: 5, borderRadius: 16, border: "1px solid hsl(222 40% 10%)" }}>
           {TABS.map(tab => {
             const active = activeTab === tab.id;
             return (
               <button key={tab.id} onClick={() => switchTab(tab.id)}
                 style={{
-                  flex: 1, padding: "10px 8px", borderRadius: 10, cursor: "pointer", border: "none", transition: "all 0.2s", textAlign: "center",
-                  background: active ? "linear-gradient(135deg, hsl(187 100% 52% / 0.2), hsl(200 100% 45% / 0.1))" : "transparent",
-                  boxShadow: active ? "inset 0 0 0 1px hsl(187 100% 52% / 0.4)" : "none",
+                  flex: 1, padding: "12px 8px", borderRadius: 12, cursor: "pointer", border: "none",
+                  transition: "all 0.25s",
+                  background: active
+                    ? `linear-gradient(135deg, ${tab.color}28, ${tab.color}10)`
+                    : "transparent",
+                  boxShadow: active
+                    ? `inset 0 0 0 1.5px ${tab.color}80, 0 0 20px ${tab.glow}`
+                    : "none",
                 }}>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                  <tab.Icon style={{ width: 18, height: 18, color: active ? C : "hsl(222 25% 45%)" }} />
-                  <span style={{ fontSize: 11, fontWeight: 700, fontFamily: "'Orbitron',monospace", letterSpacing: "0.04em", color: active ? C : "hsl(222 25% 55%)", textTransform: "uppercase" }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+                  {/* Icon with coloured bg circle when active */}
+                  <div style={{
+                    width: 36, height: 36, borderRadius: "50%",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: active ? `${tab.color}22` : "transparent",
+                    border: active ? `1px solid ${tab.color}55` : "1px solid transparent",
+                    transition: "all 0.25s",
+                  }}>
+                    <tab.Icon style={{ width: 18, height: 18, color: active ? tab.color : "hsl(222 25% 45%)" }} />
+                  </div>
+                  {/* Label */}
+                  <span style={{
+                    fontSize: 11, fontWeight: 800, fontFamily: "'Orbitron',monospace",
+                    letterSpacing: "0.05em", textTransform: "uppercase",
+                    color: active ? tab.color : "hsl(222 25% 50%)",
+                    transition: "color 0.2s",
+                  }}>
                     {tab.label}
                   </span>
-                  <span style={{ fontSize: 9, fontFamily: "'Rajdhani',sans-serif", color: active ? "hsl(187 100% 52% / 0.7)" : "hsl(222 25% 38%)", display: "block" }}>
+                  {/* Sub-label */}
+                  <span style={{
+                    fontSize: 9, fontFamily: "'Rajdhani',sans-serif",
+                    color: active ? `${tab.color}CC` : "hsl(222 25% 35%)",
+                    transition: "color 0.2s",
+                    letterSpacing: "0.02em",
+                  }}>
                     {tab.sub}
                   </span>
+                  {/* Active indicator dot */}
+                  {active && (
+                    <div style={{
+                      width: 5, height: 5, borderRadius: "50%",
+                      background: tab.color,
+                      boxShadow: `0 0 6px ${tab.color}`,
+                    }} />
+                  )}
                 </div>
               </button>
             );
