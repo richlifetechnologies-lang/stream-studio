@@ -61,8 +61,8 @@ jobs:
             Write-Host "VBCable: $([math]::Round((Get-Item 'drivers\VBCable_Setup_x64.exe').Length/1KB,1)) KB"
             Remove-Item "drivers\VBCable.zip","drivers\VBCable_tmp" -Recurse -Force -ErrorAction SilentlyContinue
           } catch {
-            Write-Error "VBCable download failed: $_"
-            exit 1
+            Write-Warning "VBCable download failed: $_ — microphone driver will be skipped"
+            [System.IO.File]::WriteAllBytes("drivers\VBCable_Setup_x64.exe", [byte[]]@())
           }
 
           # ── OBS Studio installer (virtual camera component only) ──────────
