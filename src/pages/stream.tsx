@@ -10,7 +10,7 @@ import { sessionStart, sessionTick, sessionEnd } from "../lib/session-store";
 import {
   Zap, Square, Play, Camera, Monitor, Maximize2, RefreshCw,
   ChevronDown, Image, Loader2, X, Settings, Mic, Wifi, WifiOff,
-  Volume2, Upload, Trash2, Video, Headphones, VideoIcon,
+  Volume2, Upload, Trash2, Video, Headphones, VideoIcon, Smartphone,
 } from "lucide-react";
 import { encode, decode } from "@msgpack/msgpack";
 
@@ -404,6 +404,14 @@ export default function StreamPage() {
   // ── Tab state ──────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState<TabId>("video-audio");
 
+  // ── Portrait / Landscape mode (persisted) ──────────────────────────────────
+  const [portraitMode, setPortraitMode] = useState<boolean>(() => {
+    try { return localStorage.getItem("ss_portrait_mode") === "1"; } catch { return false; }
+  });
+  const togglePortrait = useCallback(() => {
+    setPortraitMode(v => { const next = !v; try { localStorage.setItem("ss_portrait_mode", next ? "1" : "0"); } catch { /**/ } return next; });
+  }, []);
+
   // ── Stream state ───────────────────────────────────────────────────────────
   const [connStatus, setConnStatus]   = useState<"idle"|"connecting"|"connected">("idle");
   const [isStreaming, setIsStreaming] = useState(false);
@@ -746,6 +754,125 @@ export default function StreamPage() {
   const needsVideo = activeTab !== "audio-only";
   const needsVoice = activeTab !== "video-only";
 
+  // ─── Video output panel (portrait & landscape) ────────────────────────────
+  // Portrait mode = 9:16 ratio, clean output, no overlay chrome.
+  // Landscape mode = 16:9 ratio, OBS/popout buttons visible.
+  // The mode toggle sits OUTSIDE the panel so the video output is always clean.
+  const VideoOutputPanel = ({ showPiP = true }: { showPiP?: boolean }) => {
+    const isPortrait = portraitMode;
+    const panelStyle: React.CSSProperties = isPortrait
+      ? {
+          // 9:16 — exact mobile phone video call ratio
+          // Centred, max-width so it doesn't go too wide on large screens
+          position: "relative",
+          width: "100%",
+          maxWidth: 340,
+          margin: "0 auto",
+          aspectRatio: "9/16",
+          borderRadius: 18,
+          overflow: "hidden",
+          background: "#000",
+          boxShadow: connStatus === "connected"
+            ? "0 0 60px hsl(187 100% 52% / 0.3), 0 0 0 2px hsl(187 100% 52% / 0.2)"
+            : "0 0 0 1px hsl(222 40% 14%)",
+        }
+      : {
+          position: "relative",
+          width: "100%",
+          aspectRatio: "16/9",
+          borderRadius: 14,
+          overflow: "hidden",
+          background: "#000",
+          boxShadow: connStatus === "connected"
+            ? "0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)"
+            : "0 0 0 1px hsl(222 40% 14%)",
+        };
+
+    return (
+      <div style={panelStyle}>
+        {/* AI output video — always clean, no overlay chrome */}
+        <video ref={remoteVideoRef} autoPlay playsInline
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transform: "scaleX(-1)" }} />
+
+        {/* Idle placeholder */}
+        {connStatus === "idle" && (
+          <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, background: "radial-gradient(ellipse at center, hsl(222 44% 8%) 0%, hsl(222 47% 4%) 100%)" }}>
+            <Zap style={{ width: 32, height: 32, color: C }} />
+            <p style={{ fontFamily: "'Orbitron',monospace", fontSize: 14, fontWeight: 700, color: "hsl(190 80% 96%)" }}>AI Video Output</p>
+            <p style={{ fontSize: 13, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif", textAlign: "center", padding: "0 20px" }}>
+              {isPortrait ? "Portrait mode active" : "Enable camera and click Start"}
+            </p>
+          </div>
+        )}
+
+        {/* OBS / popout / fullscreen overlay — LANDSCAPE ONLY */}
+        {!isPortrait && (
+          <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
+            <div style={{ position: "relative" }}>
+              <button onClick={isObsModeActive ? closeObs : openObs}
+                style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff", border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer" }}>
+                <Monitor style={{ width: 11, height: 11 }} /> OBS
+              </button>
+              {obsInstructions && (
+                <div style={{ position: "absolute", top: 36, right: 0, width: 240, background: "hsl(222 44% 7%)", border: "1px solid rgba(0,210,211,0.3)", borderRadius: 12, padding: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.6)", zIndex: 30 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: C, fontFamily: "monospace" }}>● OBS WINDOW OPEN</span>
+                    <button onClick={() => setObsInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                  </div>
+                  <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>In OBS → Sources → + → Window Capture → select "Stream Studio OBS".</p>
+                </div>
+              )}
+            </div>
+            <button onClick={isPopoutOpen ? closePopout : openPopout} style={{ width: 30, height: 30, borderRadius: "50%", background: isPopoutOpen ? "rgba(0,210,211,0.85)" : "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Monitor style={{ width: 13, height: 13 }} />
+            </button>
+            <button onClick={() => setIsFullscreen(v => !v)} style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Maximize2 style={{ width: 13, height: 13 }} />
+            </button>
+          </div>
+        )}
+
+        {/* PiP local camera — landscape only, hidden in portrait */}
+        {!isPortrait && showPiP && (
+          <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000" }}>
+            <video ref={localVideoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
+            {!cameraReady && (
+              <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
+                <Camera style={{ width: 18, height: 18, color: "hsl(222 25% 50%)" }} />
+                <button onClick={() => startCamera()} style={{ fontSize: 10, color: C, fontWeight: 700, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>Enable Camera</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ─── Portrait / Landscape toggle button (always outside the video panel) ───
+  const OrientationToggle = () => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+      <button
+        onClick={togglePortrait}
+        title={portraitMode ? "Switch to Landscape (16:9)" : "Switch to Portrait (9:16)"}
+        style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "8px 16px", borderRadius: 10, cursor: "pointer",
+          background: portraitMode ? "hsl(187 100% 52% / 0.15)" : "hsl(222 40% 8%)",
+          border: `1px solid ${portraitMode ? "hsl(187 100% 52% / 0.5)" : "hsl(222 40% 14%)"}`,
+          color: portraitMode ? C : "hsl(222 25% 55%)",
+          fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 10,
+          letterSpacing: "0.06em", textTransform: "uppercase", transition: "all 0.2s",
+        }}>
+        {portraitMode
+          ? <><Smartphone style={{ width: 13, height: 13 }} /> Portrait (9:16)</>
+          : <><Monitor style={{ width: 13, height: 13 }} /> Landscape (16:9)</>}
+      </button>
+      <span style={{ fontSize: 10, color: "hsl(222 25% 40%)", fontFamily: "'Rajdhani',sans-serif" }}>
+        {portraitMode ? "Mobile video call mode — clean output" : "Standard widescreen mode"}
+      </span>
+    </div>
+  );
+
   // ─── Stream button ─────────────────────────────────────────────────────────
   const canStart = activeTab === "audio-only" ? true : (cameraReady && !credsMissing);
   const StreamBtn = () => isStreaming ? (
@@ -1045,52 +1172,10 @@ export default function StreamPage() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 316px", gap: 20 }}>
             {/* Left */}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              {/* AI Output video */}
-              <div style={{ position: "relative", width: "100%", aspectRatio: "16/9", borderRadius: 14, overflow: "hidden", background: "#000",
-                boxShadow: connStatus === "connected" ? "0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)" : "0 0 0 1px hsl(222 40% 14%)" }}>
-                <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transform: "scaleX(-1)" }} />
-                {connStatus === "idle" && (
-                  <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, background: "radial-gradient(ellipse at center, hsl(222 44% 8%) 0%, hsl(222 47% 4%) 100%)" }}>
-                    <Zap style={{ width: 32, height: 32, color: C }} />
-                    <p style={{ fontFamily: "'Orbitron',monospace", fontSize: 14, fontWeight: 700, color: "hsl(190 80% 96%)" }}>AI Video Output</p>
-                    <p style={{ fontSize: 13, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif" }}>Enable camera and click Start</p>
-                  </div>
-                )}
-                {/* overlay buttons */}
-                <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
-                  <div style={{ position: "relative" }}>
-                    <button onClick={isObsModeActive ? closeObs : openObs}
-                      style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff", border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer" }}>
-                      <Monitor style={{ width: 11, height: 11 }} /> OBS
-                    </button>
-                    {obsInstructions && (
-                      <div style={{ position: "absolute", top: 36, right: 0, width: 240, background: "hsl(222 44% 7%)", border: "1px solid rgba(0,210,211,0.3)", borderRadius: 12, padding: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.6)", zIndex: 30 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                          <span style={{ fontSize: 10, fontWeight: 700, color: C, fontFamily: "monospace" }}>● OBS WINDOW OPEN</span>
-                          <button onClick={() => setObsInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
-                        </div>
-                        <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>In OBS → Sources → + → Window Capture → select "Stream Studio OBS".</p>
-                      </div>
-                    )}
-                  </div>
-                  <button onClick={isPopoutOpen ? closePopout : openPopout} style={{ width: 30, height: 30, borderRadius: "50%", background: isPopoutOpen ? "rgba(0,210,211,0.85)" : "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Monitor style={{ width: 13, height: 13 }} />
-                  </button>
-                  <button onClick={() => setIsFullscreen(v => !v)} style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Maximize2 style={{ width: 13, height: 13 }} />
-                  </button>
-                </div>
-                {/* PiP camera */}
-                <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000" }}>
-                  <video ref={localVideoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
-                  {!cameraReady && (
-                    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
-                      <Camera style={{ width: 18, height: 18, color: "hsl(222 25% 50%)" }} />
-                      <button onClick={() => startCamera()} style={{ fontSize: 10, color: C, fontWeight: 700, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>Enable Camera</button>
-                    </div>
-                  )}
-                </div>
-              </div>
+              {/* AI Output video — portrait or landscape */}
+              <VideoOutputPanel showPiP={true} />
+              {/* Orientation toggle — always outside the video, always clean */}
+              <OrientationToggle />
               <DeviceSelectors showCamera={true} />
               <StreamBtn />
             </div>
@@ -1213,36 +1298,8 @@ export default function StreamPage() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 316px", gap: 20 }}>
             {/* Left */}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <div style={{ position: "relative", width: "100%", aspectRatio: "16/9", borderRadius: 14, overflow: "hidden", background: "#000",
-                boxShadow: connStatus === "connected" ? "0 0 40px hsl(187 100% 52% / 0.25), 0 0 0 1px hsl(187 100% 52% / 0.15)" : "0 0 0 1px hsl(222 40% 14%)" }}>
-                <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transform: "scaleX(-1)" }} />
-                {connStatus === "idle" && (
-                  <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, background: "radial-gradient(ellipse at center, hsl(222 44% 8%) 0%, hsl(222 47% 4%) 100%)" }}>
-                    <Zap style={{ width: 32, height: 32, color: C }} />
-                    <p style={{ fontFamily: "'Orbitron',monospace", fontSize: 14, fontWeight: 700, color: "hsl(190 80% 96%)" }}>AI Video Output</p>
-                    <p style={{ fontSize: 13, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif" }}>Enable camera and click Start</p>
-                  </div>
-                )}
-                {/* overlay buttons */}
-                <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
-                  <button onClick={isObsModeActive ? closeObs : openObs}
-                    style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsModeActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: isObsModeActive ? "hsl(222 47% 4%)" : "#fff", border: isObsModeActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", cursor: "pointer" }}>
-                    <Monitor style={{ width: 11, height: 11 }} /> OBS
-                  </button>
-                  <button onClick={() => setIsFullscreen(v => !v)} style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Maximize2 style={{ width: 13, height: 13 }} />
-                  </button>
-                </div>
-                <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000" }}>
-                  <video ref={localVideoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
-                  {!cameraReady && (
-                    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
-                      <Camera style={{ width: 18, height: 18, color: "hsl(222 25% 50%)" }} />
-                      <button onClick={() => startCamera()} style={{ fontSize: 10, color: C, fontWeight: 700, background: "none", border: "none", cursor: "pointer", textDecoration: "underline" }}>Enable Camera</button>
-                    </div>
-                  )}
-                </div>
-              </div>
+              <VideoOutputPanel showPiP={true} />
+              <OrientationToggle />
               <DeviceSelectors showCamera={true} />
               <StreamBtn />
             </div>
