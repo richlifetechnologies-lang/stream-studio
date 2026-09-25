@@ -47,56 +47,40 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path "drivers" -Force | Out-Null
-          
-          # ── OBS VirtualCam standalone plugin (~2MB, MIT license) ─────────
-          # This is the STANDALONE virtual camera only, NOT full OBS
-          Write-Host "Downloading Stream Studio Camera driver (OBS VirtualCam)..."
+
+          # ── VB-Audio Virtual Cable (virtual microphone, ~1.5MB) ───────────
+          # Inno Setup based — silent flag is /VERYSILENT
+          Write-Host "Downloading VB-Audio Virtual Cable..."
           try {
-            # obs-virtualcam standalone Windows installer
-            $obsVcUrl = "https://github.com/obsproject/obs-studio/releases/download/30.2.2/obs-studio-30.2.2-windows-installer.exe"
-            # Use the dedicated virtualcam-install from releases (much smaller)
-            # Try the obs-virtualcam from its own repo first
-            $urls = @(
-              "https://github.com/obsproject/obs-studio/releases/download/30.1.2/OBS-Studio-30.1.2-Windows.exe",
-              "https://github.com/obsproject/obs-studio/releases/latest/download/OBS-Studio-Windows-Installer.exe"
-            )
-            $downloaded = $false
-            foreach ($url in $urls) {
-              try {
-                Invoke-WebRequest -Uri $url -OutFile "drivers\OBS-VirtualCam-Setup.exe" -TimeoutSec 180
-                $size = (Get-Item "drivers\OBS-VirtualCam-Setup.exe").Length
-                if ($size -gt 1000) {
-                  Write-Host "Downloaded OBS installer: $([math]::Round($size/1MB,1)) MB"
-                  $downloaded = $true
-                  break
-                }
-              } catch { Write-Warning "Failed from $url" }
-            }
-            if (-not $downloaded) { throw "Could not download OBS installer" }
+            Invoke-WebRequest -Uri "https://download.vb-audio.com/Download_CABLE/VBCable_Driver_Pack43.zip" `
+              -OutFile "drivers\VBCable.zip" -TimeoutSec 120
+            Expand-Archive -Path "drivers\VBCable.zip" -DestinationPath "drivers\VBCable_tmp" -Force
+            $setup = Get-ChildItem "drivers\VBCable_tmp" -Filter "VBCable_Setup_x64.exe" -Recurse | Select-Object -First 1
+            if (-not $setup) { throw "VBCable_Setup_x64.exe not found in zip" }
+            Copy-Item $setup.FullName "drivers\VBCable_Setup_x64.exe"
+            Write-Host "VBCable: $([math]::Round((Get-Item 'drivers\VBCable_Setup_x64.exe').Length/1KB,1)) KB"
+            Remove-Item "drivers\VBCable.zip","drivers\VBCable_tmp" -Recurse -Force -ErrorAction SilentlyContinue
           } catch {
-            Write-Warning "OBS download failed: $_"
-            # Create a placeholder — camera still works via OBS if already installed
+            Write-Error "VBCable download failed: $_"
+            exit 1
+          }
+
+          # ── OBS Studio installer (virtual camera component only) ──────────
+          # Inno Setup based — /COMPONENTS=VirtualCamera installs only the
+          # DirectShow virtual camera, no OBS UI or other components
+          Write-Host "Downloading OBS Studio installer (VirtualCamera component)..."
+          try {
+            Invoke-WebRequest `
+              -Uri "https://github.com/obsproject/obs-studio/releases/download/30.2.2/OBS-Studio-30.2.2-Windows-Installer.exe" `
+              -OutFile "drivers\OBS-VirtualCam-Setup.exe" -TimeoutSec 300
+            Write-Host "OBS: $([math]::Round((Get-Item 'drivers\OBS-VirtualCam-Setup.exe').Length/1MB,1)) MB"
+          } catch {
+            Write-Warning "OBS download failed: $_ — camera driver will be skipped"
             [System.IO.File]::WriteAllBytes("drivers\OBS-VirtualCam-Setup.exe", [byte[]]@())
           }
 
-          # ── VB-Audio Virtual Cable (~1.5MB, free for commercial use) ─────
-          Write-Host "Downloading Stream Studio Microphone driver (VB-Audio Cable)..."
-          try {
-            Invoke-WebRequest -Uri "https://download.vb-audio.com/Download_CABLE/VBCable_Driver_Pack43.zip" -OutFile "drivers\VBCable.zip" -TimeoutSec 120
-            Expand-Archive -Path "drivers\VBCable.zip" -DestinationPath "drivers\VBCable_tmp" -Force
-            $setup = Get-ChildItem "drivers\VBCable_tmp" -Filter "VBCable_Setup_x64.exe" -Recurse | Select-Object -First 1
-            if ($setup) {
-              Copy-Item $setup.FullName "drivers\VBCable_Setup_x64.exe"
-              Write-Host "VBCable ready: $([math]::Round((Get-Item 'drivers\VBCable_Setup_x64.exe').Length/1KB,1)) KB"
-            } else { throw "VBCable_Setup_x64.exe not found in archive" }
-            Remove-Item "drivers\VBCable.zip","drivers\VBCable_tmp" -Recurse -Force -ErrorAction SilentlyContinue
-          } catch {
-            Write-Warning "VBCable download failed: $_"
-            [System.IO.File]::WriteAllBytes("drivers\VBCable_Setup_x64.exe", [byte[]]@())
-          }
-
           Write-Host "=== Drivers ready ==="
-          Get-ChildItem "drivers\" | Select-Object Name, @{N='SizeKB';E={[math]::Round($_.Length/1KB,1)}}
+          Get-ChildItem "drivers\" | Select-Object Name,@{N='SizeKB';E={[math]::Round($_.Length/1KB,1)}}
 
       - name: Build web + electron
         run: npm run build

@@ -252,10 +252,17 @@ function createWindow() {
     },
   });
 
-  // Grant media/camera/mic permissions automatically — required for WebRTC in Electron
+  // Grant media/camera/mic permissions — required for WebRTC in Electron
   mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
     const allowed = ["media", "audioCapture", "videoCapture", "displayCapture"];
     callback(allowed.includes(permission));
+  });
+
+  // Required in Electron 20+ — without this the permission check fails silently
+  // even after the request handler grants it, causing the camera to go black
+  mainWindow.webContents.session.setPermissionCheckHandler((_wc, permission) => {
+    const allowed = ["media", "audioCapture", "videoCapture", "displayCapture"];
+    return (allowed as string[]).includes(permission);
   });
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
