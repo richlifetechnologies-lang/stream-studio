@@ -65,19 +65,10 @@ jobs:
             [System.IO.File]::WriteAllBytes("drivers\VBCable_Setup_x64.exe", [byte[]]@())
           }
 
-          # ── OBS Studio installer (virtual camera component only) ──────────
-          # Inno Setup based — /COMPONENTS=VirtualCamera installs only the
-          # DirectShow virtual camera, no OBS UI or other components
-          Write-Host "Downloading OBS Studio installer (VirtualCamera component)..."
-          try {
-            Invoke-WebRequest `
-              -Uri "https://github.com/obsproject/obs-studio/releases/download/30.2.2/OBS-Studio-30.2.2-Windows-Installer.exe" `
-              -OutFile "drivers\OBS-VirtualCam-Setup.exe" -TimeoutSec 300
-            Write-Host "OBS: $([math]::Round((Get-Item 'drivers\OBS-VirtualCam-Setup.exe').Length/1MB,1)) MB"
-          } catch {
-            Write-Warning "OBS download failed: $_ — camera driver will be skipped"
-            [System.IO.File]::WriteAllBytes("drivers\OBS-VirtualCam-Setup.exe", [byte[]]@())
-          }
+          # ── OBS Studio is NOT bundled: users install OBS themselves if they
+          # want its virtual camera. Bundling it caused a silent ~300MB OBS
+          # download on every app install and a black "virtual camera" entry
+          # in the input picker.
 
           Write-Host "=== Drivers ready ==="
           Get-ChildItem "drivers\" | Select-Object Name,@{N='SizeKB';E={[math]::Round($_.Length/1KB,1)}}

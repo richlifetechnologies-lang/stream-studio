@@ -79,6 +79,18 @@ function formatTime(s: number) {
   return `${Math.floor(s / 60).toString().padStart(2, "0")}:${Math.floor(s % 60).toString().padStart(2, "0")}`;
 }
 
+// ─── Virtual-device filters ────────────────────────────────────────────────────
+// Virtual cameras (OBS Virtual Camera, etc.) emit black frames when their host
+// app isn't running, and virtual audio devices are loopback cables — not real
+// input hardware. Filter them out of the picker so the app defaults to a real
+// webcam/mic instead of a blank feed.
+function isVirtualCamLabel(label: string) {
+  return /(obs virtual camera|stream studio camera|richx[\s_-]*cam|virtual camera|vcam)/i.test(label);
+}
+function isVirtualMicLabel(label: string) {
+  return /(vb-cable|vb-audio|stream studio (microphone|speaker)|virtual (audio|cable|mic))/i.test(label);
+}
+
 // ─── Audio sync pipeline ──────────────────────────────────────────────────────
 // Captures the selected mic, applies a cross-correlation delay to match
 // AI video output latency, and returns a delayed audio destination node.
@@ -487,6 +499,9 @@ export default function StreamPage() {
   const obsWindowRef    = useRef<Window|null>(null);
   const remoteStreamRef = useRef<MediaStream|null>(null);
   const isStartingRef   = useRef(false);
+  // Live-camera restart handles used by enumerateDevices auto-correct.
+  const startCameraRef   = useRef<((deviceId?: string) => Promise<void>) | null>(null);
+  const cameraReadyRef   = useRef(false);
   // Mic-only analyser for audio-only tab waveform
   const micOnlyAudioCtxRef  = useRef<AudioContext|null>(null);
   const micOnlyAnalyserRef  = useRef<AnalyserNode|null>(null);
@@ -502,11 +517,33 @@ export default function StreamPage() {
   const enumerateDevices = useCallback(async () => {
     try {
       const devs = await navigator.mediaDevices.enumerateDevices();
-      const vids = devs.filter(d => d.kind === "videoinput");
-      const auds = devs.filter(d => d.kind === "audioinput");
+      const allVids = devs.filter(d => d.kind === "videoinput");
+      const allAuds = devs.filter(d => d.kind === "audioinput");
+      // Prefer real hardware; keep unlabeled (pre-permission) devices so the
+      // list isn't empty before the user grants camera access. Only fall back
+      // to the unfiltered list if filtering would leave nothing.
+      const realVids = allVids.filter(d => !d.label || !isVirtualCamLabel(d.label));
+      const realAuds = allAuds.filter(d => !d.label || !isVirtualMicLabel(d.label));
+      const vids = realVids.length ? realVids : allVids;
+      const auds = realAuds.length ? realAuds : allAuds;
       setCameras(vids); setMics(auds);
+
+      // Default selection to a real device.
       if (vids.length && !selectedCamId) setSelectedCamId(vids[0].deviceId);
       if (auds.length && !selectedMicId) setSelectedMicId(auds[0].deviceId);
+
+      // Auto-correct a currently-selected virtual device (e.g. an OBS Virtual
+      // Camera left over from a prior install) and restart the live preview on
+      // a real camera so the feed isn't permanently black.
+      const camStillListed = !selectedCamId || vids.some(v => v.deviceId === selectedCamId);
+      if (!camStillListed && vids.length) {
+        const nextId = vids[0].deviceId;
+        setSelectedCamId(nextId);
+        if (cameraReadyRef.current) startCameraRef.current?.(nextId);
+      }
+      if (selectedMicId && !auds.some(a => a.deviceId === selectedMicId) && auds.length) {
+        setSelectedMicId(auds[0].deviceId);
+      }
     } catch { /* ignore */ }
   }, [selectedCamId, selectedMicId]);
 
@@ -525,17 +562,32 @@ export default function StreamPage() {
   // ─── Camera ────────────────────────────────────────────────────────────────
   const startCamera = useCallback(async (deviceId?: string) => {
     const id = deviceId ?? selectedCamId;
+    const constraints = (exact: boolean): MediaStreamConstraints => ({
+      video: id && exact
+        ? { deviceId: { exact: id }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      audio: false,
+    });
     try {
+      // Acquire the NEW stream before tearing down the old one, so a failed
+      // getUserMedia never leaves the preview permanently black. If the exact
+      // device id is gone (unplugged / virtual device removed), retry without it.
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints(true));
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia(constraints(false));
+      }
       localStreamRef.current?.getTracks().forEach(t => t.stop());
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: id ? { deviceId: { exact: id }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-        audio: false,
-      });
       localStreamRef.current = stream;
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      cameraReadyRef.current = true;
       setCameraReady(true); enumerateDevices();
     } catch { toast({ title: "Camera Error", description: "Could not access camera.", variant: "destructive" }); }
   }, [selectedCamId, enumerateDevices, toast]);
+
+  // Refs so enumerateDevices can restart the live camera without a dep cycle.
+  startCameraRef.current = startCamera;
 
   const handleCameraSwitch = useCallback(async (id: string) => {
     setSelectedCamId(id); if (cameraReady) await startCamera(id);
