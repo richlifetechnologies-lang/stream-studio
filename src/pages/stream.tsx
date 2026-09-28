@@ -488,8 +488,8 @@ export default function StreamPage() {
   const [obsInstructions, setObsInstructions] = useState(false);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
-  const localVideoRef   = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef  = useRef<HTMLVideoElement>(null);
+  const localVideoRef   = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef  = useRef<HTMLVideoElement | null>(null);
   const localStreamRef  = useRef<MediaStream|null>(null);
   const videoSessionRef = useRef<VideoSession|null>(null);
   const syncPipeRef     = useRef<AudioSyncPipeline|null>(null);
@@ -831,7 +831,11 @@ export default function StreamPage() {
   // Portrait mode = 9:16 ratio, clean output, no overlay chrome.
   // Landscape mode = 16:9 ratio, OBS/popout buttons visible.
   // The mode toggle sits OUTSIDE the panel so the video output is always clean.
-  const VideoOutputPanel = ({ showPiP = true }: { showPiP?: boolean }) => {
+  // Render function (NOT a nested component): returning the JSX inline keeps the
+  // <video> element's identity stable across re-renders, so React reuses the same
+  // DOM node instead of remounting it. A nested component gets a new type identity
+  // every render, which unmounts the <video> and drops its srcObject → black frame.
+  const renderVideoOutput = (showPiP: boolean = true) => {
     const isPortrait = portraitMode;
     const panelStyle: React.CSSProperties = isPortrait
       ? {
@@ -864,7 +868,9 @@ export default function StreamPage() {
     return (
       <div style={panelStyle}>
         {/* AI output video — always clean, no overlay chrome */}
-        <video ref={remoteVideoRef} autoPlay playsInline
+        <video
+          ref={el => { remoteVideoRef.current = el; if (el && remoteStreamRef.current && el.srcObject !== remoteStreamRef.current) el.srcObject = remoteStreamRef.current; }}
+          autoPlay playsInline
           style={{ width: "100%", height: "100%", objectFit: "cover", display: "block", transform: "scaleX(-1)" }} />
 
         {/* Idle placeholder */}
@@ -908,7 +914,9 @@ export default function StreamPage() {
         {/* PiP local camera — landscape only, hidden in portrait */}
         {!isPortrait && showPiP && (
           <div style={{ position: "absolute", bottom: 10, left: 10, zIndex: 10, width: "22%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)", background: "#000" }}>
-            <video ref={localVideoRef} autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
+            <video
+              ref={el => { localVideoRef.current = el; if (el && localStreamRef.current && el.srcObject !== localStreamRef.current) el.srcObject = localStreamRef.current; }}
+              autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
             {!cameraReady && (
               <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
                 <Camera style={{ width: 18, height: 18, color: "hsl(222 25% 50%)" }} />
@@ -1280,7 +1288,7 @@ export default function StreamPage() {
             {/* Left */}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {/* AI Output video — portrait or landscape */}
-              <VideoOutputPanel showPiP={true} />
+              {renderVideoOutput(true)}
               {/* Orientation toggle — always outside the video, always clean */}
               <OrientationToggle />
               <DeviceSelectors showCamera={true} />
@@ -1405,7 +1413,7 @@ export default function StreamPage() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 316px", gap: 20 }}>
             {/* Left */}
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-              <VideoOutputPanel showPiP={true} />
+              {renderVideoOutput(true)}
               <OrientationToggle />
               <DeviceSelectors showCamera={true} />
               <StreamBtn />
