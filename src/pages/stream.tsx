@@ -738,16 +738,34 @@ export default function StreamPage() {
   useEffect(() => () => { stopVCamPump(); getElectronAPI()?.vcamStop?.(); }, [stopVCamPump]);
 
   // ─── Virtual microphone: route AI audio to the VB-Cable sink ────────────────
-  const findCableSink = useCallback(async (): Promise<{ id: string; label: string } | null> => {
+  // Output-device labels are blank until the page holds a media permission, so we
+  // request one (and immediately release it) before scanning for the cable.
+  const ensureMediaPermission = useCallback(async (): Promise<boolean> => {
     try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach(t => t.stop());
+      return true;
+    } catch { return false; }
+  }, []);
+
+  const findCableSink = useCallback(async (): Promise<{ id: string; label: string } | null> => {
+    const scan = async () => {
       const devs = await navigator.mediaDevices.enumerateDevices();
-      const outs = devs.filter(d => d.kind === "audiooutput");
+      return devs.filter(d => d.kind === "audiooutput");
+    };
+    try {
+      let outs = await scan();
+      // Labels hidden (no permission yet) or no outputs listed → ask once, rescan.
+      if (outs.length === 0 || outs.every(d => !d.label)) {
+        await ensureMediaPermission();
+        outs = await scan();
+      }
       const cable =
         outs.find(d => /(cable[- ]input|stream studio speaker)/i.test(d.label)) ||
         outs.find(d => /(cable|vb-?audio|vb-?cable|stream studio)/i.test(d.label));
       return cable ? { id: cable.deviceId, label: cable.label } : null;
     } catch { return null; }
-  }, []);
+  }, [ensureMediaPermission]);
 
   const applyAudioRoute = useCallback(async (on: boolean) => {
     const v = remoteVideoRef.current as (HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> }) | null;
@@ -759,7 +777,11 @@ export default function StreamPage() {
     }
     const cable = await findCableSink();
     if (!cable) {
-      toast({ title: "Virtual microphone not found", description: "Install the Stream Studio Microphone (VB-Cable) driver first, then retry.", variant: "destructive" });
+      toast({
+        title: "Virtual microphone not detected",
+        description: "Enable your camera or microphone once (to grant audio permission), then toggle this again. If it still fails, set “CABLE Input (VB-Audio Virtual Cable)” as your Windows default playback device.",
+        variant: "destructive",
+      });
       setAudioRouteOn(false); return;
     }
     try {
