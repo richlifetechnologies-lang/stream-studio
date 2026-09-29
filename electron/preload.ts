@@ -36,4 +36,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getFalToken: (apiKey: string, appId: string): Promise<string> => {
     return ipcRenderer.invoke("get-fal-token", apiKey, appId);
   },
+
+  // ─── Virtual camera ("Stream Studio Camera") frame feeder ───────────────────
+  vcamStart: (): Promise<{ supported: boolean; active: boolean; ready: boolean; error: string | null }> =>
+    ipcRenderer.invoke("vcam-start"),
+  vcamStop: (): Promise<{ supported: boolean; active: boolean; ready: boolean; error: string | null }> =>
+    ipcRenderer.invoke("vcam-stop"),
+  vcamStatus: (): Promise<{ supported: boolean; active: boolean; ready: boolean; error: string | null; cameraName: string }> =>
+    ipcRenderer.invoke("vcam-status"),
+  // High-frequency RGBA8 frame push (fire-and-forget)
+  vcamFrame: (buf: ArrayBuffer, width: number, height: number): void => {
+    ipcRenderer.send("vcam-frame", buf, width, height);
+  },
 });

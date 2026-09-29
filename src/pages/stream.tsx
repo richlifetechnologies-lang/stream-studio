@@ -380,6 +380,18 @@ const _TOKEN_ALIAS = "lucy-2-5";
 
 interface VideoSession { close(): void; send(d: Record<string, unknown>): void; }
 
+type VcamResult = { supported: boolean; active: boolean; ready: boolean; error: string | null };
+interface ElectronAPI {
+  getFalToken?: (k: string, a: string) => Promise<string>;
+  vcamStart?: () => Promise<VcamResult>;
+  vcamStop?: () => Promise<VcamResult>;
+  vcamStatus?: () => Promise<VcamResult & { cameraName: string }>;
+  vcamFrame?: (buf: ArrayBuffer, w: number, h: number) => void;
+}
+function getElectronAPI(): ElectronAPI | undefined {
+  return (window as unknown as { electronAPI?: ElectronAPI }).electronAPI;
+}
+
 async function _mintToken(apiKey: string): Promise<string> {
   const api = (window as unknown as { electronAPI?: { getFalToken?: (k: string, a: string) => Promise<string> } }).electronAPI;
   if (api?.getFalToken) return api.getFalToken(apiKey, _TOKEN_ALIAS);
@@ -510,6 +522,13 @@ export default function StreamPage() {
   const [isObsModeActive, setIsObsModeActive] = useState(false);
   const [obsInstructions, setObsInstructions] = useState(false);
 
+  // ── Virtual devices (Stream Studio Camera / Microphone) ───────────────────
+  const [vcamEnabled, setVcamEnabled]     = useState(false);
+  const [vcamSupported, setVcamSupported] = useState(true);
+  const [vcamReady, setVcamReady]         = useState(false);
+  const [audioRouteOn, setAudioRouteOn]   = useState(false);
+  const [cableSinkLabel, setCableSinkLabel] = useState("");
+
   // ── Refs ──────────────────────────────────────────────────────────────────
   const localVideoRef   = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef  = useRef<HTMLVideoElement | null>(null);
@@ -525,6 +544,10 @@ export default function StreamPage() {
   // Live-camera restart handles used by enumerateDevices auto-correct.
   const startCameraRef   = useRef<((deviceId?: string) => Promise<void>) | null>(null);
   const cameraReadyRef   = useRef(false);
+  // Virtual-camera frame pump handles.
+  const vcamCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const vcamTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const vcamOnRef     = useRef(false);
   // Mic-only analyser for audio-only tab waveform
   const micOnlyAudioCtxRef  = useRef<AudioContext|null>(null);
   const micOnlyAnalyserRef  = useRef<AnalyserNode|null>(null);
@@ -637,6 +660,127 @@ export default function StreamPage() {
   // a camera turned on in one tab never keeps showing in another. Each tab starts
   // with its preview off until the user enables it there.
   useEffect(() => { stopCamera(); }, [activeTab, stopCamera]);
+
+  // ─── Virtual camera: pump AI output frames to the native feeder ─────────────
+  // Draws the AI output video into a fixed 1280x720 RGBA8 canvas and pushes each
+  // frame over IPC to the Electron main process, which writes it into the
+  // "Stream Studio Camera" shared-memory buffer. resizemode=LINEAR in the header
+  // makes the filter scale to whatever resolution the calling app negotiated.
+  const VCAM_W = 1280, VCAM_H = 720;
+  const vcamTick = useCallback(() => {
+    if (!vcamOnRef.current) return;
+    const api = getElectronAPI();
+    let canvas = vcamCanvasRef.current;
+    if (!canvas) { canvas = document.createElement("canvas"); vcamCanvasRef.current = canvas; }
+    if (canvas.width !== VCAM_W) canvas.width = VCAM_W;
+    if (canvas.height !== VCAM_H) canvas.height = VCAM_H;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (ctx) {
+      const v = remoteVideoRef.current;
+      if (v && v.videoWidth > 0 && v.readyState >= 2) {
+        const vr = v.videoWidth / v.videoHeight, cr = VCAM_W / VCAM_H;
+        let dw = VCAM_W, dh = VCAM_H, dx = 0, dy = 0;
+        if (vr > cr) { dh = VCAM_H; dw = VCAM_H * vr; dx = (VCAM_W - dw) / 2; }
+        else         { dw = VCAM_W; dh = VCAM_W / vr; dy = (VCAM_H - dh) / 2; }
+        ctx.drawImage(v, dx, dy, dw, dh);
+      } else {
+        ctx.fillStyle = "#000"; ctx.fillRect(0, 0, VCAM_W, VCAM_H);
+      }
+      const frame = ctx.getImageData(0, 0, VCAM_W, VCAM_H);
+      api?.vcamFrame?.(frame.data.buffer as ArrayBuffer, VCAM_W, VCAM_H);
+    }
+    vcamTimerRef.current = setTimeout(vcamTick, 33); // ~30fps
+  }, []);
+
+  const stopVCamPump = useCallback(() => {
+    vcamOnRef.current = false;
+    if (vcamTimerRef.current) { clearTimeout(vcamTimerRef.current); vcamTimerRef.current = null; }
+  }, []);
+
+  const toggleVCam = useCallback(async () => {
+    const api = getElectronAPI();
+    if (!api?.vcamStart || !api?.vcamStop) {
+      setVcamSupported(false);
+      toast({ title: "Virtual camera unavailable", description: "Run in the Stream Studio desktop app on Windows, and install the Stream Studio Camera driver.", variant: "destructive" });
+      return;
+    }
+    if (!vcamEnabled) {
+      const r = await api.vcamStart();
+      setVcamSupported(r.supported);
+      if (!r.supported) {
+        toast({ title: "Virtual camera unavailable", description: r.error || "The native driver layer could not load.", variant: "destructive" });
+        return;
+      }
+      setVcamEnabled(true);
+      vcamOnRef.current = true;
+      vcamTick();
+      toast({ title: "Stream Studio Camera ON", description: "Select “Stream Studio Camera” in Zoom/Teams/Chrome. It shows the AI output while streaming." });
+    } else {
+      stopVCamPump();
+      await api.vcamStop();
+      setVcamEnabled(false);
+      setVcamReady(false);
+    }
+  }, [vcamEnabled, vcamTick, stopVCamPump, toast]);
+
+  // Poll native readiness (true once a calling app has opened the camera).
+  useEffect(() => {
+    if (!vcamEnabled) return;
+    let alive = true;
+    const iv = setInterval(async () => {
+      const st = await getElectronAPI()?.vcamStatus?.();
+      if (alive && st) { setVcamReady(st.ready); setVcamSupported(st.supported); }
+    }, 1000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [vcamEnabled]);
+
+  // Always tear the feeder down on unmount.
+  useEffect(() => () => { stopVCamPump(); getElectronAPI()?.vcamStop?.(); }, [stopVCamPump]);
+
+  // ─── Virtual microphone: route AI audio to the VB-Cable sink ────────────────
+  const findCableSink = useCallback(async (): Promise<{ id: string; label: string } | null> => {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const outs = devs.filter(d => d.kind === "audiooutput");
+      const cable =
+        outs.find(d => /(cable[- ]input|stream studio speaker)/i.test(d.label)) ||
+        outs.find(d => /(cable|vb-?audio|vb-?cable|stream studio)/i.test(d.label));
+      return cable ? { id: cable.deviceId, label: cable.label } : null;
+    } catch { return null; }
+  }, []);
+
+  const applyAudioRoute = useCallback(async (on: boolean) => {
+    const v = remoteVideoRef.current as (HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> }) | null;
+    if (!v) return;
+    if (!on) { try { await v.setSinkId?.(""); } catch { /* ignore */ } setCableSinkLabel(""); return; }
+    if (typeof v.setSinkId !== "function") {
+      toast({ title: "Audio routing unsupported", description: "This runtime can't select an output device.", variant: "destructive" });
+      setAudioRouteOn(false); return;
+    }
+    const cable = await findCableSink();
+    if (!cable) {
+      toast({ title: "Virtual microphone not found", description: "Install the Stream Studio Microphone (VB-Cable) driver first, then retry.", variant: "destructive" });
+      setAudioRouteOn(false); return;
+    }
+    try {
+      await v.setSinkId(cable.id);
+      setCableSinkLabel(cable.label);
+    } catch {
+      toast({ title: "Could not route audio", description: "The output device was rejected.", variant: "destructive" });
+      setAudioRouteOn(false);
+    }
+  }, [findCableSink, toast]);
+
+  const toggleAudioRoute = useCallback(async () => {
+    const next = !audioRouteOn;
+    setAudioRouteOn(next);
+    await applyAudioRoute(next);
+  }, [audioRouteOn, applyAudioRoute]);
+
+  // Re-apply routing when the AI output (re)connects, since srcObject changes.
+  useEffect(() => {
+    if (audioRouteOn && connStatus === "connected") applyAudioRoute(true);
+  }, [connStatus, audioRouteOn, applyAudioRoute]);
 
   // ─── Mic-only preview for audio-only tab ───────────────────────────────────
   const startMicPreview = useCallback(async () => {
@@ -1176,6 +1320,62 @@ export default function StreamPage() {
     </>
   );
 
+  // ─── Virtual device broadcast panel (Stream Studio Camera / Microphone) ─────
+  // Plain render function (not a nested component) so it reconciles in place and
+  // never remounts the video subtree.
+  const renderVirtualDevices = (showCamera: boolean) => {
+    const rowSt: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 10, background: "hsl(222 40% 8%)", border: "1px solid hsl(222 40% 12%)" };
+    const toggleBtn = (on: boolean, onClick: () => void, disabled: boolean, label: string) => (
+      <button onClick={onClick} disabled={disabled}
+        style={{ flexShrink: 0, width: 46, height: 24, borderRadius: 14, border: "none", cursor: disabled ? "not-allowed" : "pointer", background: on ? C : "hsl(222 30% 20%)", position: "relative", opacity: disabled ? 0.5 : 1, transition: "background 0.15s" }}>
+        <span style={{ position: "absolute", top: 3, left: on ? 25 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
+        <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>{label}</span>
+      </button>
+    );
+    return (
+      <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: C, textTransform: "uppercase", letterSpacing: "0.12em", fontFamily: "'Orbitron',monospace" }}>Broadcast to Calls</p>
+          <span style={{ fontSize: 9, color: "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif" }}>Zoom · Teams · Chrome · WhatsApp</span>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {showCamera && (
+            <div style={rowSt}>
+              <div style={{ width: 28, height: 28, borderRadius: 8, background: vcamEnabled ? "hsl(187 100% 52% / 0.15)" : "hsl(222 40% 10%)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <Camera style={{ width: 14, height: 14, color: vcamEnabled ? C : "hsl(222 25% 45%)" }} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Rajdhani',sans-serif" }}>Stream Studio Camera</p>
+                <p style={{ fontSize: 10, color: vcamReady ? C : "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif" }}>
+                  {!vcamSupported ? "Driver layer unavailable" : vcamReady ? "Live — a call app is receiving video" : vcamEnabled ? "Waiting for a call app to open it…" : "Off"}
+                </p>
+              </div>
+              {toggleBtn(vcamEnabled, toggleVCam, false, "Toggle Stream Studio Camera")}
+            </div>
+          )}
+
+          <div style={rowSt}>
+            <div style={{ width: 28, height: 28, borderRadius: 8, background: audioRouteOn ? "hsl(265 90% 65% / 0.15)" : "hsl(222 40% 10%)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Mic style={{ width: 14, height: 14, color: audioRouteOn ? VC : "hsl(222 25% 45%)" }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 12, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Rajdhani',sans-serif" }}>Stream Studio Microphone</p>
+              <p style={{ fontSize: 10, color: audioRouteOn ? VC : "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {audioRouteOn ? (cableSinkLabel ? `Routing → ${cableSinkLabel}` : "Routing AI audio to cable") : "Off — AI audio plays to speakers"}
+              </p>
+            </div>
+            {toggleBtn(audioRouteOn, toggleAudioRoute, false, "Toggle Stream Studio Microphone")}
+          </div>
+        </div>
+
+        <p style={{ fontSize: 10, color: "hsl(222 25% 42%)", fontFamily: "'Rajdhani',sans-serif", marginTop: 10, lineHeight: 1.5 }}>
+          Install the drivers once (Stream Studio → drivers → Install-VirtualDevices.ps1), then pick “Stream Studio Camera” / “Stream Studio Microphone” inside your calling app.
+        </p>
+      </div>
+    );
+  };
+
   // ─── Audio sync status panel ───────────────────────────────────────────────
   const AudioSyncPanel = () => (
     <div style={{ background: "hsl(222 44% 6%)", border: "1px solid hsl(222 40% 11%)", borderRadius: 14, padding: 16 }}>
@@ -1346,6 +1546,7 @@ export default function StreamPage() {
               {/* Orientation toggle — always outside the video, always clean */}
               <OrientationToggle />
               <DeviceSelectors showCamera={true} />
+              {renderVirtualDevices(true)}
               <StreamBtn />
             </div>
             {/* Right sidebar */}
@@ -1451,6 +1652,7 @@ export default function StreamPage() {
               </div>
 
               <DeviceSelectors showCamera={false} />
+              {renderVirtualDevices(false)}
               <StreamBtn />
             </div>
             {/* Right */}
@@ -1470,6 +1672,7 @@ export default function StreamPage() {
               {renderVideoOutput(true)}
               <OrientationToggle />
               <DeviceSelectors showCamera={true} />
+              {renderVirtualDevices(true)}
               <StreamBtn />
             </div>
             {/* Right */}

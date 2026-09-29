@@ -4,6 +4,7 @@ import http from "http";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { initVirtualCameraIpc, shutdownVirtualCamera } from "./virtual-camera";
 
 const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
 
@@ -233,6 +234,12 @@ ipcMain.on("open-external", (_event, url: string) => {
   }
 });
 
+// ─── Virtual camera frame feeder (UnityCapture shared-memory protocol) ────────
+// Registers vcam-start / vcam-stop / vcam-status / vcam-frame IPC. Fully guarded:
+// if the native layer is unavailable the handlers report unsupported and the app
+// keeps working exactly as before.
+initVirtualCameraIpc(ipcMain);
+
 // ─── Window ───────────────────────────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -341,5 +348,10 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  shutdownVirtualCamera();
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  shutdownVirtualCamera();
 });
