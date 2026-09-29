@@ -10,7 +10,7 @@ import { sessionStart, sessionTick, sessionEnd } from "../lib/session-store";
 import {
   Zap, Square, Play, Camera, Monitor, Maximize2, RefreshCw,
   ChevronDown, Image, Loader2, X, Settings, Mic, Wifi, WifiOff,
-  Volume2, Upload, Trash2, Video, Headphones, VideoIcon, Smartphone,
+  Volume2, Upload, Trash2, Video, Headphones, VideoIcon, Smartphone, CameraOff,
 } from "lucide-react";
 import { encode, decode } from "@msgpack/msgpack";
 
@@ -45,6 +45,25 @@ const TABS: { id: TabId; label: string; sub: string; Icon: typeof Video; color: 
     glow:  "hsl(35 100% 55% / 0.25)",
   },
 ];
+
+// ─── Per-tab isolated state ────────────────────────────────────────────────────
+// Each tab (Video+Audio / Audio Call / Video Call) is an independent workspace:
+// its own selected camera & mic, style, prompt, reference image and voice-clone
+// settings. This hook stores a separate value per TabId but exposes the SAME
+// [value, setValue] shape as useState, so call sites are unchanged and switching
+// tabs never leaks one tab's inputs/uploads into another.
+const TAB_IDS: TabId[] = ["video-audio", "audio-only", "video-only"];
+function usePerTabState<T>(activeTab: TabId, initial: T): [T, (v: T | ((prev: T) => T)) => void] {
+  const [store, setStore] = useState<Record<TabId, T>>(() => {
+    const base = {} as Record<TabId, T>;
+    for (const id of TAB_IDS) base[id] = initial;
+    return base;
+  });
+  const setValue = useCallback((v: T | ((prev: T) => T)) => {
+    setStore(prev => ({ ...prev, [activeTab]: typeof v === "function" ? (v as (p: T) => T)(prev[activeTab]) : v }));
+  }, [activeTab]);
+  return [store[activeTab], setValue];
+}
 
 // ─── Style presets ────────────────────────────────────────────────────────────
 const STYLES = [
@@ -455,15 +474,17 @@ export default function StreamPage() {
   // ── Devices ───────────────────────────────────────────────────────────────
   const [cameras, setCameras]             = useState<MediaDeviceInfo[]>([]);
   const [mics, setMics]                   = useState<MediaDeviceInfo[]>([]);
-  const [selectedCamId, setSelectedCamId] = useState("");
-  const [selectedMicId, setSelectedMicId] = useState("");
+  // Per-tab: each tab keeps its own camera/mic selection (strict tab isolation).
+  const [selectedCamId, setSelectedCamId] = usePerTabState<string>(activeTab, "");
+  const [selectedMicId, setSelectedMicId] = usePerTabState<string>(activeTab, "");
   const [cameraReady, setCameraReady]     = useState(false);
 
   // ── Video style ───────────────────────────────────────────────────────────
-  const [selectedStyle, setSelectedStyle] = useState<StyleId>("hyper-real");
-  const [customPrompt, setCustomPrompt]   = useState("");
-  const [refImageB64, setRefImageB64]     = useState<string|null>(null);
-  const [refImagePreview, setRefImagePreview] = useState<string|null>(null);
+  // Per-tab: prompt/style/reference image uploaded in one tab must not appear in another.
+  const [selectedStyle, setSelectedStyle] = usePerTabState<StyleId>(activeTab, "hyper-real");
+  const [customPrompt, setCustomPrompt]   = usePerTabState<string>(activeTab, "");
+  const [refImageB64, setRefImageB64]     = usePerTabState<string|null>(activeTab, null);
+  const [refImagePreview, setRefImagePreview] = usePerTabState<string|null>(activeTab, null);
 
   // ── Audio sync ────────────────────────────────────────────────────────────
   const [syncDelay, setSyncDelay]     = useState(0.8);
@@ -471,10 +492,12 @@ export default function StreamPage() {
   const [audioActive, setAudioActive] = useState(false);
 
   // ── Voice cloning ─────────────────────────────────────────────────────────
-  const [vcEnabled, setVcEnabled]         = useState(false);
+  // Per-tab: voice-clone toggle/voice chosen in the Audio Call tab must not leak
+  // into the Video+Audio tab's audio section (and vice versa).
+  const [vcEnabled, setVcEnabled]         = usePerTabState<boolean>(activeTab, false);
   const [vcActive, setVcActive]           = useState(false);
   const [vcVu, setVcVu]                   = useState(0);
-  const [vcVoiceId, setVcVoiceId]         = useState(BUILTIN_VOICES[0].id);
+  const [vcVoiceId, setVcVoiceId]         = usePerTabState<string>(activeTab, BUILTIN_VOICES[0].id);
   const [savedVoices, setSavedVoices]     = useState<SavedVoice[]>(() => getSavedVoices());
   const [uploadingVoice, setUploadingVoice] = useState(false);
   const [uploadVoiceName, setUploadVoiceName] = useState("");
@@ -589,9 +612,31 @@ export default function StreamPage() {
   // Refs so enumerateDevices can restart the live camera without a dep cycle.
   startCameraRef.current = startCamera;
 
+  // ─── Turn camera OFF (release hardware, clear preview) ───────────────────────
+  const stopCamera = useCallback(() => {
+    localStreamRef.current?.getTracks().forEach(t => t.stop());
+    localStreamRef.current = null;
+    if (localVideoRef.current) localVideoRef.current.srcObject = null;
+    cameraReadyRef.current = false;
+    setCameraReady(false);
+  }, []);
+
   const handleCameraSwitch = useCallback(async (id: string) => {
-    setSelectedCamId(id); if (cameraReady) await startCamera(id);
-  }, [cameraReady, startCamera]);
+    if (id === selectedCamId) return;
+    setSelectedCamId(id);
+    if (cameraReady) {
+      // Release the previously-selected camera immediately, then start the new one.
+      localStreamRef.current?.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+      if (localVideoRef.current) localVideoRef.current.srcObject = null;
+      await startCamera(id);
+    }
+  }, [cameraReady, selectedCamId, startCamera]);
+
+  // Strict tab isolation: release the camera whenever the active tab changes, so
+  // a camera turned on in one tab never keeps showing in another. Each tab starts
+  // with its preview off until the user enables it there.
+  useEffect(() => { stopCamera(); }, [activeTab, stopCamera]);
 
   // ─── Mic-only preview for audio-only tab ───────────────────────────────────
   const startMicPreview = useCallback(async () => {
@@ -917,6 +962,15 @@ export default function StreamPage() {
             <video
               ref={el => { localVideoRef.current = el; if (el && localStreamRef.current && el.srcObject !== localStreamRef.current) el.srcObject = localStreamRef.current; }}
               autoPlay muted playsInline style={{ width: "100%", height: "100%", objectFit: "cover", transform: "scaleX(-1)" }} />
+            {cameraReady && (
+              <button
+                onClick={() => { if (!isStreaming) stopCamera(); }}
+                title={isStreaming ? "Stop the stream to turn off the camera" : "Turn off camera"}
+                disabled={isStreaming}
+                style={{ position: "absolute", top: 4, right: 4, zIndex: 11, width: 22, height: 22, borderRadius: "50%", background: isStreaming ? "rgba(0,0,0,0.4)" : "rgba(0,0,0,0.65)", border: "1px solid rgba(255,255,255,0.25)", color: isStreaming ? "rgba(255,255,255,0.35)" : "#fff", cursor: isStreaming ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
+                <CameraOff style={{ width: 12, height: 12 }} />
+              </button>
+            )}
             {!cameraReady && (
               <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, background: "rgba(0,0,0,0.85)" }}>
                 <Camera style={{ width: 18, height: 18, color: "hsl(222 25% 50%)" }} />
