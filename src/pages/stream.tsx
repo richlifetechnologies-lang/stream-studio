@@ -521,6 +521,8 @@ export default function StreamPage() {
   const [isPopoutOpen, setIsPopoutOpen]       = useState(false);
   const [isObsModeActive, setIsObsModeActive] = useState(false);
   const [obsInstructions, setObsInstructions] = useState(false);
+  const [isObsPortraitActive, setIsObsPortraitActive] = useState(false);
+  const [obsPortraitInstructions, setObsPortraitInstructions] = useState(false);
 
   // ── Virtual devices (Stream Studio Camera / Microphone) ───────────────────
   const [vcamEnabled, setVcamEnabled]     = useState(false);
@@ -539,6 +541,7 @@ export default function StreamPage() {
   const timerRef        = useRef<ReturnType<typeof setInterval>|null>(null);
   const popoutRef       = useRef<Window|null>(null);
   const obsWindowRef    = useRef<Window|null>(null);
+  const obsPortraitWindowRef = useRef<Window|null>(null);
   const remoteStreamRef = useRef<MediaStream|null>(null);
   const isStartingRef   = useRef(false);
   // Live-camera restart handles used by enumerateDevices auto-correct.
@@ -842,7 +845,7 @@ export default function StreamPage() {
     syncPipeRef.current?.stop(); syncPipeRef.current = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     remoteStreamRef.current = null; window.__ssRemoteStream = null;
-    [popoutRef, obsWindowRef].forEach(r => {
+    [popoutRef, obsWindowRef, obsPortraitWindowRef].forEach(r => {
       if (r.current && !r.current.closed) try { r.current.postMessage("stream-studio-clear", "*"); } catch { /**/ }
     });
     sessionEnd();
@@ -899,7 +902,7 @@ export default function StreamPage() {
             remoteStreamRef.current = remote;
             if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
             window.__ssRemoteStream = remote;
-            _notifyPopup(popoutRef.current); _notifyPopup(obsWindowRef.current);
+            _notifyPopup(popoutRef.current); _notifyPopup(obsWindowRef.current); _notifyPopup(obsPortraitWindowRef.current);
             setConnStatus("connected");
           },
           () => { teardownStream(); toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" }); },
@@ -967,7 +970,7 @@ export default function StreamPage() {
       }
     };
     r.readAsDataURL(file); e.target.value = "";
-  }, [isStreaming, selectedStyle, customPrompt]);
+  }, [isStreaming, selectedStyle, customPrompt, setRefImagePreview, setRefImageB64]);
 
   // ─── Voice upload ──────────────────────────────────────────────────────────
   const handleVoiceUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1009,8 +1012,18 @@ export default function StreamPage() {
     const chk = setInterval(() => { if (w.closed) { clearInterval(chk); setIsObsModeActive(false); setObsInstructions(false); obsWindowRef.current = null; } }, 1000);
   }, []);
   const closeObs    = useCallback(() => { obsWindowRef.current?.close(); obsWindowRef.current = null; setIsObsModeActive(false); setObsInstructions(false); }, []);
+  const openObsPortrait = useCallback(() => {
+    if (obsPortraitWindowRef.current && !obsPortraitWindowRef.current.closed) { obsPortraitWindowRef.current.focus(); return; }
+    // 9:16 portrait window for OBS window-capture (mobile-mode fallback).
+    const h = 900, w = Math.round(h * 9 / 16);
+    const w2 = window.open(_getBaseUrl() + "#/obsout-portrait", "ss-obsout-portrait", `width=${w},height=${h},menubar=no,toolbar=no,location=no,status=no`);
+    if (!w2) return; obsPortraitWindowRef.current = w2; setIsObsPortraitActive(true); setObsPortraitInstructions(true);
+    w2.addEventListener("load", () => _notifyPopup(w2));
+    const chk = setInterval(() => { if (w2.closed) { clearInterval(chk); setIsObsPortraitActive(false); setObsPortraitInstructions(false); obsPortraitWindowRef.current = null; } }, 1000);
+  }, []);
+  const closeObsPortrait = useCallback(() => { obsPortraitWindowRef.current?.close(); obsPortraitWindowRef.current = null; setIsObsPortraitActive(false); setObsPortraitInstructions(false); }, []);
   const closePopout = useCallback(() => { popoutRef.current?.close(); popoutRef.current = null; setIsPopoutOpen(false); }, []);
-  const closeAll    = useCallback(() => { closePopout(); closeObs(); }, [closePopout, closeObs]);
+  const closeAll    = useCallback(() => { closePopout(); closeObs(); closeObsPortrait(); }, [closePopout, closeObs, closeObsPortrait]);
 
   useEffect(() => {
     const h = (e: MessageEvent) => {
@@ -1119,6 +1132,27 @@ export default function StreamPage() {
             <button onClick={() => setIsFullscreen(v => !v)} style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <Maximize2 style={{ width: 13, height: 13 }} />
             </button>
+          </div>
+        )}
+
+        {/* OBS portrait clean-output overlay — PORTRAIT ONLY */}
+        {isPortrait && (
+          <div style={{ position: "absolute", top: 10, right: 10, zIndex: 20, display: "flex", gap: 6 }}>
+            <div style={{ position: "relative" }}>
+              <button onClick={isObsPortraitActive ? closeObsPortrait : openObsPortrait}
+                style={{ display: "flex", alignItems: "center", gap: 5, height: 30, padding: "0 10px", borderRadius: 20, background: isObsPortraitActive ? "rgba(0,210,211,0.9)" : "rgba(0,0,0,0.6)", color: isObsPortraitActive ? "hsl(222 47% 4%)" : "#fff", border: isObsPortraitActive ? "1px solid rgba(0,210,211,0.6)" : "1px solid rgba(255,255,255,0.2)", fontSize: 10, fontWeight: 700, fontFamily: "monospace", letterSpacing: 1, cursor: "pointer" }}>
+                <Monitor style={{ width: 11, height: 11 }} /> OBS 9:16
+              </button>
+              {obsPortraitInstructions && (
+                <div style={{ position: "absolute", top: 36, right: 0, width: 240, background: "hsl(222 44% 7%)", border: "1px solid rgba(0,210,211,0.3)", borderRadius: 12, padding: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.6)", zIndex: 30 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: C, fontFamily: "monospace" }}>● PORTRAIT OBS OPEN</span>
+                    <button onClick={() => setObsPortraitInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
+                  </div>
+                  <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>In OBS → Sources → + → Window Capture → select "Stream Studio OBS Portrait" for a clean 9:16 feed.</p>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

@@ -6,6 +6,7 @@ import SettingsPage from "./pages/settings";
 import UsagePage from "./pages/usage";
 import PopoutPage from "./pages/popout";
 import ObsoutPage from "./pages/obsout";
+import ObsoutPortraitPage from "./pages/obsoutp";
 import Toaster from "./components/toaster";
 
 const C = "hsl(187 100% 52%)";
@@ -197,6 +198,9 @@ export default function App() {
         </Route>
         <Route path="/obsout">
           <ObsoutPage />
+        </Route>
+        <Route path="/obsout-portrait">
+          <ObsoutPortraitPage />
         </Route>
         <Route path="/usage">
           <UsagePage />
