@@ -1,7 +1,7 @@
 /*
-  Stream Studio - Virtual Camera Frame Feeder
+  XCAM - Virtual Camera Frame Feeder
   -------------------------------------------
-  Feeds RGBA8 frames into the "Stream Studio Camera" DirectShow filter
+  Feeds RGBA8 frames into the "XCAM Camera" DirectShow filter
   (UnityCapture) via its shared-memory protocol, so calling apps (Zoom, Teams,
   Chrome, Discord, WhatsApp...) see the AI video output as a real webcam.
 
@@ -219,7 +219,7 @@ export function initVirtualCameraIpc(ipcMain: IpcMain) {
     active: S.active,
     ready: S.ready,
     error: S.error,
-    cameraName: "Stream Studio Camera",
+    cameraName: "XCAM Camera",
   }));
 
   // High-frequency frame pump (fire-and-forget).

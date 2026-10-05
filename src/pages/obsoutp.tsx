@@ -28,8 +28,8 @@ export default function ObsoutPortraitPage() {
     attach();
 
     const handler = (e: MessageEvent) => {
-      if (e.data?.type === "stream-studio-stream") attach();
-      if (e.data === "stream-studio-clear") {
+      if (e.data?.type === "xcam-stream") attach();
+      if (e.data === "xcam-clear") {
         if (bgRef.current) bgRef.current.srcObject = null;
         if (fgRef.current) fgRef.current.srcObject = null;
       }

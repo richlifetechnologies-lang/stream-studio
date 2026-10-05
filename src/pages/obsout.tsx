@@ -16,10 +16,10 @@ export default function ObsoutPage() {
     tryGetStream();
 
     const handler = (e: MessageEvent) => {
-      if (e.data?.type === "stream-studio-stream") {
+      if (e.data?.type === "xcam-stream") {
         tryGetStream();
       }
-      if (e.data === "stream-studio-clear" && videoRef.current) {
+      if (e.data === "xcam-clear" && videoRef.current) {
         videoRef.current.srcObject = null;
       }
     };

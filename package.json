@@ -1,6 +1,6 @@
 {
-  "name": "stream-studio",
-  "version": "1.20.1",
+  "name": "xcam",
+  "version": "1.21.0",
   "description": "Real-time AI webcam transformation powered by fal.ai Lucy 2.5",
   "main": "dist-electron/main.js",
   "author": "Rich Life Technologies",
@@ -51,8 +51,8 @@
     "vite": "^6.0.6"
   },
   "build": {
-    "appId": "com.richlife.streamstudio",
-    "productName": "Stream Studio",
+    "appId": "com.richlife.xcam",
+    "productName": "XCAM",
     "copyright": "Copyright © 2025 Rich Life Technologies",
     "directories": {
       "output": "release",
@@ -86,7 +86,7 @@
         }
       ],
       "icon": "public/icon.ico",
-      "artifactName": "StreamStudio-Setup-${version}.exe"
+      "artifactName": "XCAM-Setup-${version}.exe"
     },
     "nsis": {
       "oneClick": false,
@@ -97,7 +97,7 @@
       "uninstallerSidebar": "public/installer-sidebar.bmp",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Stream Studio",
+      "shortcutName": "XCAM",
       "displayLanguageSelector": false,
       "include": "drivers/install-drivers.nsh",
       "warningsAsErrors": false
@@ -119,17 +119,17 @@
       ],
       "icon": "public/icon.png",
       "category": "public.app-category.video",
-      "artifactName": "StreamStudio-${version}-${arch}.dmg"
+      "artifactName": "XCAM-${version}-${arch}.dmg"
     },
     "linux": {
       "target": "AppImage",
       "category": "Video",
-      "artifactName": "StreamStudio-${version}.AppImage"
+      "artifactName": "XCAM-${version}.AppImage"
     },
     "publish": {
       "provider": "github",
       "owner": "richlifetechnologies-lang",
-      "repo": "stream-studio"
+      "repo": "xcam"
     }
   }
 }

@@ -11,16 +11,16 @@ const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 
 const GITHUB_OWNER = "richlifetechnologies-lang";
-const GITHUB_REPO  = "stream-studio";
+const GITHUB_REPO  = "xcam";
 
 // ─── Asset pattern for the current platform + architecture ─────────────────
 function getAssetPattern(): RegExp {
-  if (process.platform === "win32") return /StreamStudio-Setup-.*\.exe$/i;
+  if (process.platform === "win32") return /XCAM-Setup-.*\.exe$/i;
   if (process.platform === "darwin") {
     const arch = process.arch === "arm64" ? "arm64" : "x64";
-    return new RegExp(`StreamStudio-.*-${arch}\\.dmg`, "i");
+    return new RegExp(`XCAM-.*-${arch}\\.dmg`, "i");
   }
-  return /StreamStudio-.*\.AppImage$/i;
+  return /XCAM-.*\.AppImage$/i;
 }
 
 // ─── Generic HTTPS GET with redirect following ────────────────────────────────
@@ -29,7 +29,7 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Bu
     const lib = url.startsWith("https") ? https : http;
     const req = (lib as typeof https).get(
       url,
-      { headers: { "User-Agent": `stream-studio/${app.getVersion()}`, ...headers } },
+      { headers: { "User-Agent": `xcam/${app.getVersion()}`, ...headers } },
       (res) => {
         if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
           resolve(httpsGet(res.headers.location, headers));
@@ -56,7 +56,7 @@ function downloadFile(
       const lib = u.startsWith("https") ? https : http;
       (lib as typeof https).get(
         u,
-        { headers: { "User-Agent": `stream-studio/${app.getVersion()}` } },
+        { headers: { "User-Agent": `xcam/${app.getVersion()}` } },
         (res) => {
           if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
             doGet(res.headers.location);
@@ -247,7 +247,7 @@ function createWindow() {
     height: 900,
     minWidth: 1024,
     minHeight: 700,
-    title: "Stream Studio",
+    title: "XCAM",
     backgroundColor: "#070d1a",
     autoHideMenuBar: true,
     webPreferences: {
@@ -324,15 +324,15 @@ function showMacFirstLaunchNotice() {
     if (!mainWindow) return;
     dialog.showMessageBox(mainWindow, {
       type: "info",
-      title: "Welcome to Stream Studio",
+      title: "Welcome to XCAM",
       message: "One-time Mac setup complete",
       detail:
         "If macOS blocked this app when you first opened it, here's how to fix it:\n\n" +
-        "1. Close Stream Studio\n" +
+        "1. Close XCAM\n" +
         "2. Right-click the app icon (or DMG) → Open\n" +
         "3. Click Open in the security dialog\n\n" +
         "You only need to do this once. After that it launches normally.\n\n" +
-        "This happens because Stream Studio isn't signed with a paid Apple Developer certificate.",
+        "This happens because XCAM isn't signed with a paid Apple Developer certificate.",
       buttons: ["Got it"],
       defaultId: 0,
     });
