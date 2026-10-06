@@ -3,7 +3,7 @@ const ENGINE_KEY_STORAGE = "ss_api_key";
 const VOICE_KEY_STORAGE  = "ss_elevenlabs_key";
 const VOICES_STORAGE     = "ss_custom_voices";
 
-// ─── XCAM Engine key (video AI) ─────────────────────────────────────
+// ─── Stream Studio Engine key (video AI) ─────────────────────────────────────
 export function getApiKey(): string | null {
   return localStorage.getItem(ENGINE_KEY_STORAGE);
 }

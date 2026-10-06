@@ -1,22 +1,22 @@
-# XCAM Virtual Drivers
+# Stream Studio Virtual Drivers
 
-XCAM exposes the AI output to other apps (Zoom, Teams, Chrome, Discord,
+Stream Studio exposes the AI output to other apps (Zoom, Teams, Chrome, Discord,
 WhatsApp, …) through two virtual devices — **no OBS required**:
 
 | Device | Type | Technology | What it carries |
 |--------|------|-----------|-----------------|
-| **XCAM Camera** | Video input | UnityCapture DirectShow filter (`virtual-camera/*.dll`) | The AI video output |
-| **XCAM Microphone** | Audio input | VB-Audio Virtual Cable (`VBCable_Setup_x64.exe`) | The AI/cloned audio |
+| **Stream Studio Camera** | Video input | UnityCapture DirectShow filter (`virtual-camera/*.dll`) | The AI video output |
+| **Stream Studio Microphone** | Audio input | VB-Audio Virtual Cable (`VBCable_Setup_x64.exe`) | The AI/cloned audio |
 
 ## How it works
 
 - **Camera:** the UnityCapture filter registers as a normal webcam. While it is
-  toggled ON in XCAM, the Electron main process writes each AI-output
+  toggled ON in Stream Studio, the Electron main process writes each AI-output
   frame (RGBA8, 1280×720) into the filter's shared-memory buffer using the
   UnityCapture protocol (`UnityCapture_Data` + mutex/event handshake). The filter
   scales the frame (`resizemode=LINEAR`) to whatever resolution the calling app
   negotiated, so it works at 480p–4K.
-- **Microphone:** VB-Cable creates a virtual audio cable. Toggling "XCAM
+- **Microphone:** VB-Cable creates a virtual audio cable. Toggling "Stream Studio
   Microphone" routes the AI audio to the cable input via `setSinkId`; the calling
   app records from the cable output.
 
@@ -37,11 +37,11 @@ real success/failure (it does not print a fake "[OK]").
 
 ## Using it in a call
 
-1. In XCAM, turn on the **Broadcast to Calls** toggles (Camera /
+1. In Stream Studio, turn on the **Broadcast to Calls** toggles (Camera /
    Microphone).
 2. Start streaming so there is AI output to broadcast.
-3. In Zoom/Teams/Chrome, pick **XCAM Camera** as the camera and
-   **XCAM Microphone** (or "CABLE Output") as the microphone.
+3. In Zoom/Teams/Chrome, pick **Stream Studio Camera** as the camera and
+   **Stream Studio Microphone** (or "CABLE Output") as the microphone.
 
 ## Notes
 

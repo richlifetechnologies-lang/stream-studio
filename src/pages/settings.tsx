@@ -90,7 +90,7 @@ export default function SettingsPage() {
             Account Settings
           </h1>
           <p style={{ color: "hsl(222 25% 50%)", fontSize: 14, fontFamily: "'Rajdhani', sans-serif" }}>
-            Manage your XCAM keys stored on this device
+            Manage your Stream Studio keys stored on this device
           </p>
         </div>
 

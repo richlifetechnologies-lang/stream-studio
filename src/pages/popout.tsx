@@ -16,10 +16,10 @@ export default function PopoutPage() {
     tryGetStream();
 
     const handler = (e: MessageEvent) => {
-      if (e.data?.type === "xcam-stream") {
+      if (e.data?.type === "stream-studio-stream") {
         tryGetStream();
       }
-      if (e.data === "xcam-clear" && videoRef.current) {
+      if (e.data === "stream-studio-clear" && videoRef.current) {
         videoRef.current.srcObject = null;
       }
     };
@@ -29,12 +29,12 @@ export default function PopoutPage() {
   }, []);
 
   const handleStop = () => {
-    if (window.opener) window.opener.postMessage("xcam-stop", "*");
+    if (window.opener) window.opener.postMessage("stream-studio-stop", "*");
     window.close();
   };
 
   const handleReconnect = () => {
-    if (window.opener) window.opener.postMessage("xcam-reconnect", "*");
+    if (window.opener) window.opener.postMessage("stream-studio-reconnect", "*");
   };
 
   return (

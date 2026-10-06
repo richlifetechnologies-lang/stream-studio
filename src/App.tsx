@@ -91,7 +91,7 @@ function UpdateBanner() {
                 Update Available
               </span>
               <span style={{ fontSize: 12, color: "hsl(222 25% 65%)", fontFamily: "'Rajdhani', sans-serif", marginLeft: 8 }}>
-                XCAM v{version} — download and install automatically
+                Stream Studio v{version} — download and install automatically
               </span>
             </>
           )}

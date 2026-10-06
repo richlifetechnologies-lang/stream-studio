@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     return ipcRenderer.invoke("get-fal-token", apiKey, appId);
   },
 
-  // ─── Virtual camera ("XCAM Camera") frame feeder ───────────────────
+  // ─── Virtual camera ("Stream Studio Camera") frame feeder ───────────────────
   vcamStart: (): Promise<{ supported: boolean; active: boolean; ready: boolean; error: string | null }> =>
     ipcRenderer.invoke("vcam-start"),
   vcamStop: (): Promise<{ supported: boolean; active: boolean; ready: boolean; error: string | null }> =>
