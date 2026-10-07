@@ -120,6 +120,21 @@ const BUF_LEN   = Math.round((BUF_SECS * 1000) / WINDOW_MS);
 const MAX_DELAY = 4.0;
 const MIN_DELAY = 0.0;
 
+// ─── Microphone capture constraints ──────────────────────────────────────────
+// Browser-native noise cancellation: suppresses background/external noise,
+// removes echo and normalises level. When the user turns it off we request the
+// raw mic signal instead (all three processing flags disabled).
+function micAudioConstraints(deviceId: string | undefined, noiseCancel: boolean, sampleRate?: number): MediaTrackConstraints {
+  const c: MediaTrackConstraints = {
+    echoCancellation: noiseCancel,
+    noiseSuppression: noiseCancel,
+    autoGainControl: noiseCancel,
+  };
+  if (sampleRate) c.sampleRate = sampleRate;
+  if (deviceId) c.deviceId = { exact: deviceId };
+  return c;
+}
+
 class AudioSyncPipeline {
   private audioCtx:   AudioContext | null = null;
   private analyser:   AnalyserNode  | null = null;
@@ -139,13 +154,11 @@ class AudioSyncPipeline {
   vuLevel = 0;
   onUpdate?: (delay: number, vu: number) => void;
 
-  async start(videoEl: HTMLVideoElement, micDeviceId?: string): Promise<MediaStreamAudioDestinationNode | null> {
+  async start(videoEl: HTMLVideoElement, micDeviceId?: string, noiseCancel = true): Promise<MediaStreamAudioDestinationNode | null> {
     this.videoEl = videoEl;
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: micDeviceId
-          ? { deviceId: { exact: micDeviceId }, echoCancellation: true, noiseSuppression: true, sampleRate: 48000 }
-          : { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
+        audio: micAudioConstraints(micDeviceId, noiseCancel, 48000),
         video: false,
       });
       const ctx = new AudioContext({ sampleRate: 48000 });
@@ -503,6 +516,14 @@ export default function StreamPage() {
   const [vuLevel, setVuLevel]         = useState(0);
   const [audioActive, setAudioActive] = useState(false);
 
+  // ── Noise cancellation (persisted, default ON) ────────────────────────────
+  const [noiseCancel, setNoiseCancel] = useState<boolean>(() => {
+    try { return localStorage.getItem("ss_noise_cancel") !== "0"; } catch { return true; }
+  });
+  const toggleNoiseCancel = useCallback(() => {
+    setNoiseCancel(v => { const next = !v; try { localStorage.setItem("ss_noise_cancel", next ? "1" : "0"); } catch { /**/ } return next; });
+  }, []);
+
   // ── Voice cloning ─────────────────────────────────────────────────────────
   // Per-tab: voice-clone toggle/voice chosen in the Audio Call tab must not leak
   // into the Video+Audio tab's audio section (and vice versa).
@@ -811,7 +832,7 @@ export default function StreamPage() {
   const startMicPreview = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true, video: false,
+        audio: micAudioConstraints(selectedMicId || undefined, noiseCancel), video: false,
       });
       micOnlyStreamRef.current?.getTracks().forEach(t => t.stop());
       micOnlyStreamRef.current = stream;
@@ -824,7 +845,7 @@ export default function StreamPage() {
       micOnlyAnalyserRef.current = an;
       setMicAnalyser(an);
     } catch { /* ignore */ }
-  }, [selectedMicId]);
+  }, [selectedMicId, noiseCancel]);
 
   useEffect(() => {
     if (activeTab === "audio-only") { startMicPreview(); }
@@ -885,7 +906,7 @@ export default function StreamPage() {
           setSyncDelay(delay); setVuLevel(vu);
           clonerRef.current?.setVideoDelay(delay);
         };
-        const dest = await pipe.start(remoteVideoRef.current!, selectedMicId || undefined);
+        const dest = await pipe.start(remoteVideoRef.current!, selectedMicId || undefined, noiseCancel);
         syncPipeRef.current = pipe;
         if (dest) {
           const track = dest.stream.getAudioTracks()[0];
@@ -939,7 +960,7 @@ export default function StreamPage() {
       toast({ title: "Stream Failed", description: err instanceof Error ? err.message : "Check your keys in Settings.", variant: "destructive" });
     } finally { isStartingRef.current = false; setIsStarting(false); }
   }, [isStreaming, credsMissing, cameraReady, activeTab, selectedStyle, customPrompt, refImageB64,
-      selectedMicId, vcEnabled, vcVoiceId, voiceKeySet, teardownStream, toast]);
+      selectedMicId, vcEnabled, vcVoiceId, voiceKeySet, noiseCancel, teardownStream, toast]);
 
   const handleStop = useCallback(() => teardownStream(), [teardownStream]);
 
@@ -1210,23 +1231,27 @@ export default function StreamPage() {
 
   // ─── Stream button ─────────────────────────────────────────────────────────
   const canStart = activeTab === "audio-only" ? true : (cameraReady && !credsMissing);
-  const StreamBtn = () => isStreaming ? (
-    <button onClick={handleStop}
-      style={{ width: "100%", height: 54, background: "hsl(0 85% 40% / 0.3)", border: "1px solid hsl(0 85% 55% / 0.5)", borderRadius: 12, cursor: "pointer", color: "hsl(0 85% 75%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.5)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.3)"; }}>
-      <Square style={{ width: 18, height: 18 }} /> Stop
-    </button>
-  ) : (
-    <button onClick={handleStartStream} disabled={isStarting || (!canStart)}
-      style={{ width: "100%", height: 54, background: (canStart && !isStarting) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (canStart && !isStarting) ? "pointer" : "not-allowed", color: (canStart && !isStarting) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (canStart && !isStarting) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none" }}
-      onMouseEnter={e => { if (canStart && !isStarting) (e.currentTarget as HTMLElement).style.filter = "brightness(1.1)"; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.filter = "none"; }}>
-      {isStarting ? <><Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> Starting…</>
-        : credsMissing && needsVideo ? <><Settings style={{ width: 18, height: 18 }} /> Open Settings</>
-        : !cameraReady && needsVideo ? <><Camera style={{ width: 18, height: 18 }} /> Enable Camera</>
-        : <><Play style={{ width: 18, height: 18 }} /> Start</>}
-    </button>
+  const StreamBtn = () => (
+    <div style={{ position: "fixed", left: "50%", transform: "translateX(-50%)", bottom: 18, zIndex: 60, width: "min(440px, calc(100vw - 110px))", filter: "drop-shadow(0 8px 24px rgba(0,0,0,0.55))" }}>
+      {isStreaming ? (
+        <button onClick={handleStop}
+          style={{ width: "100%", height: 54, background: "hsl(0 85% 40% / 0.3)", border: "1px solid hsl(0 85% 55% / 0.5)", borderRadius: 12, cursor: "pointer", color: "hsl(0 85% 75%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.5)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "hsl(0 85% 40% / 0.3)"; }}>
+          <Square style={{ width: 18, height: 18 }} /> Stop
+        </button>
+      ) : (
+        <button onClick={handleStartStream} disabled={isStarting || (!canStart)}
+          style={{ width: "100%", height: 54, background: (canStart && !isStarting) ? "linear-gradient(135deg, hsl(187 100% 52%) 0%, hsl(200 100% 45%) 100%)" : "hsl(222 40% 11%)", border: "none", borderRadius: 12, cursor: (canStart && !isStarting) ? "pointer" : "not-allowed", color: (canStart && !isStarting) ? "hsl(222 47% 4%)" : "hsl(222 25% 40%)", fontFamily: "'Orbitron',monospace", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: (canStart && !isStarting) ? "0 0 28px hsl(187 100% 52% / 0.3)" : "none" }}
+          onMouseEnter={e => { if (canStart && !isStarting) (e.currentTarget as HTMLElement).style.filter = "brightness(1.1)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.filter = "none"; }}>
+          {isStarting ? <><Loader2 style={{ width: 18, height: 18, animation: "spin 1s linear infinite" }} /> Starting…</>
+            : credsMissing && needsVideo ? <><Settings style={{ width: 18, height: 18 }} /> Open Settings</>
+            : !cameraReady && needsVideo ? <><Camera style={{ width: 18, height: 18 }} /> Enable Camera</>
+            : <><Play style={{ width: 18, height: 18 }} /> Start</>}
+        </button>
+      )}
+    </div>
   );
 
   // ─── Voice cloning panel (shared between tabs) ─────────────────────────────
@@ -1372,6 +1397,23 @@ export default function StreamPage() {
           )}
         </div>
         <button onClick={enumerateDevices} style={{ background: "none", border: "none", cursor: "pointer", color: "hsl(222 25% 50%)", padding: 4 }}><RefreshCw style={{ width: 13, height: 13 }} /></button>
+      </div>
+
+      {/* Noise cancellation */}
+      <div style={{ background: "hsl(222 44% 6%)", border: `1px solid ${noiseCancel ? "hsl(187 100% 52% / 0.35)" : "hsl(222 40% 11%)"}`, borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: noiseCancel ? "hsl(187 100% 52% / 0.15)" : "hsl(222 40% 10%)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Mic style={{ width: 15, height: 15, color: noiseCancel ? C : "hsl(222 25% 45%)" }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em", marginBottom: 3 }}>Noise Cancellation</p>
+          <p style={{ fontSize: 11, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.4 }}>
+            {noiseCancel ? "Filtering background & external noise from your mic." : "Off — raw microphone audio. Applies when you next start."}
+          </p>
+        </div>
+        <button onClick={toggleNoiseCancel} aria-pressed={noiseCancel} title="Toggle noise cancellation"
+          style={{ flexShrink: 0, width: 46, height: 24, borderRadius: 14, border: "none", cursor: "pointer", background: noiseCancel ? C : "hsl(222 30% 20%)", position: "relative", transition: "background 0.15s" }}>
+          <span style={{ position: "absolute", top: 3, left: noiseCancel ? 25 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
+        </button>
       </div>
     </>
   );
@@ -1603,7 +1645,6 @@ export default function StreamPage() {
               <OrientationToggle />
               <DeviceSelectors showCamera={true} />
               {renderVirtualDevices(true)}
-              <StreamBtn />
             </div>
             {/* Right sidebar */}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1709,7 +1750,6 @@ export default function StreamPage() {
 
               <DeviceSelectors showCamera={false} />
               {renderVirtualDevices(false)}
-              <StreamBtn />
             </div>
             {/* Right */}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1729,7 +1769,6 @@ export default function StreamPage() {
               <OrientationToggle />
               <DeviceSelectors showCamera={true} />
               {renderVirtualDevices(true)}
-              <StreamBtn />
             </div>
             {/* Right */}
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1775,6 +1814,9 @@ export default function StreamPage() {
           </div>
         )}
       </div>
+
+      {/* Always-visible Start/Stop action bar (fixed, shown on every tab) */}
+      <StreamBtn />
 
       <style>{`@keyframes spin{to{transform:rotate(360deg)}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}`}</style>
     </AppLayout>
