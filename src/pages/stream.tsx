@@ -837,9 +837,18 @@ export default function StreamPage() {
         }
       } catch { /* user cancelled or unsupported */ }
     }
+    // Diagnostics: report what the runtime actually sees so failures are
+    // self-explanatory instead of a generic "not detected".
+    let diag = "";
+    try {
+      const outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audiooutput");
+      diag = outs.length
+        ? ` Outputs seen: ${outs.map(d => d.label || "(hidden)").join(", ")}.`
+        : " No audio output devices enumerated at all.";
+    } catch { diag = " Could not enumerate devices."; }
     toast({
       title: "Virtual microphone not detected",
-      description: "The VB-Audio cable output device isn't visible. Allow microphone/camera access when prompted (labels stay hidden until then), then toggle again. If it still fails, install the drivers: Stream Studio → drivers → Install-VirtualDevices.ps1, or set “Speakers (VB-Audio Virtual Cable)” as your Windows default playback device.",
+      description: `The VB-Audio cable output device isn't visible.${diag} Allow microphone/camera access when prompted, then toggle again. If it still fails, install the drivers: Stream Studio → drivers → Install-VirtualDevices.ps1, or set “Speakers (VB-Audio Virtual Cable)” as your Windows default playback device.`,
       variant: "destructive",
     });
     setAudioRouteOn(false); return;

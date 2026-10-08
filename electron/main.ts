@@ -259,16 +259,18 @@ function createWindow() {
     },
   });
 
-  // Grant media/camera/mic permissions — required for WebRTC in Electron
+  // Grant media/camera/mic permissions — required for WebRTC in Electron.
+  // "speaker-selection" is required for selectAudioOutput(), the fallback the
+  // renderer uses to route AI audio into the VB-Cable sink.
   mainWindow.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    const allowed = ["media", "audioCapture", "videoCapture", "displayCapture"];
+    const allowed = ["media", "audioCapture", "videoCapture", "displayCapture", "speaker-selection"];
     callback(allowed.includes(permission));
   });
 
   // Required in Electron 20+ — without this the permission check fails silently
   // even after the request handler grants it, causing the camera to go black
   mainWindow.webContents.session.setPermissionCheckHandler((_wc, permission) => {
-    const allowed = ["media", "audioCapture", "videoCapture", "displayCapture"];
+    const allowed = ["media", "audioCapture", "videoCapture", "displayCapture", "speaker-selection"];
     return (allowed as string[]).includes(permission);
   });
 

@@ -95,6 +95,15 @@ function Set-CategoryInstance($instanceHive, $clsid, $name) {
   return $true
 }
 
+# Some calling apps (OBS among them) show the filter's OWN name (the CLSID default
+# value) rather than the category FriendlyName, which is why the device could
+# appear as "Unity Video Capture". Overwrite the CLSID display name too.
+function Set-FilterDisplayName($hiveRoot, $clsid, $name) {
+  if (-not $clsid) { return }
+  $key = Join-Path $hiveRoot $clsid
+  if (Test-Path $key) { Set-ItemProperty -Path $key -Name '(default)' -Value $name -ErrorAction SilentlyContinue }
+}
+
 function Remove-CategoryInstance($instanceHive, $name) {
   if (-not (Test-Path $instanceHive)) { return }
   foreach ($k in Get-ChildItem $instanceHive -ErrorAction SilentlyContinue) {
@@ -132,7 +141,7 @@ if (-not $NoVideo) {
       Write-Step "Registering 64-bit '$CameraName'..."
       $c64 = Invoke-Regsvr $Regsvr64 $Dll64
       $clsid64 = Find-FilterClsid $Dll64 'HKLM:\SOFTWARE\Classes\CLSID'
-      if ($clsid64) { [void](Set-CategoryInstance $Instance64 $clsid64 $CameraName) }
+      if ($clsid64) { [void](Set-CategoryInstance $Instance64 $clsid64 $CameraName); Set-FilterDisplayName 'HKLM:\SOFTWARE\Classes\CLSID' $clsid64 $CameraName }
       if ($clsid64 -and (Test-CameraRegistered $Instance64 $CameraName)) {
         Write-Ok "64-bit camera registered and VERIFIED in DirectShow (CLSID $clsid64)."
       } else {
@@ -146,7 +155,7 @@ if (-not $NoVideo) {
           Write-Step "Registering 32-bit '$CameraName'..."
           $c32 = Invoke-Regsvr $Regsvr32 $Dll32
           $clsid32 = Find-FilterClsid $Dll32 'HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID'
-          if ($clsid32) { [void](Set-CategoryInstance $Instance32 $clsid32 $CameraName) }
+          if ($clsid32) { [void](Set-CategoryInstance $Instance32 $clsid32 $CameraName); Set-FilterDisplayName 'HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID' $clsid32 $CameraName }
           if ($clsid32 -and (Test-CameraRegistered $Instance32 $CameraName)) {
             Write-Ok "32-bit camera registered and VERIFIED."
           } else {
