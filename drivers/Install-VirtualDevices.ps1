@@ -65,6 +65,44 @@ function Test-CameraRegistered($hivePath, $name) {
   return $false
 }
 
+# The UnityCapture DLL registers its own CLSID but does NOT add itself to the
+# DirectShow video-capture category Instance list, which is what calling apps
+# (Zoom/Teams/OBS/Discord) enumerate. Without that entry the camera is invisible
+# no matter how many times regsvr32 "succeeds". We locate the filter CLSID by the
+# DLL it loads from (name-independent) and write the category entry ourselves.
+function Find-FilterClsid($dll, $hiveRoot) {
+  if (-not (Test-Path $dll)) { return $null }
+  $target = [System.IO.Path]::GetFullPath($dll)
+  foreach ($k in Get-ChildItem $hiveRoot -ErrorAction SilentlyContinue) {
+    $ip = Join-Path $k.PSPath 'InprocServer32'
+    if (Test-Path $ip) {
+      $v = (Get-ItemProperty $ip -ErrorAction SilentlyContinue).'(default)'
+      if ($v) {
+        try { if ([System.IO.Path]::GetFullPath($v) -ieq $target) { return $k.PSChildName } } catch {}
+      }
+    }
+  }
+  return $null
+}
+
+function Set-CategoryInstance($instanceHive, $clsid, $name) {
+  if (-not $clsid) { return $false }
+  $key = Join-Path $instanceHive $clsid
+  if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+  Set-ItemProperty -Path $key -Name '(default)'   -Value $name   -ErrorAction SilentlyContinue
+  Set-ItemProperty -Path $key -Name 'FriendlyName' -Value $name   -ErrorAction SilentlyContinue
+  Set-ItemProperty -Path $key -Name 'CLSID'        -Value $clsid  -ErrorAction SilentlyContinue
+  return $true
+}
+
+function Remove-CategoryInstance($instanceHive, $name) {
+  if (-not (Test-Path $instanceHive)) { return }
+  foreach ($k in Get-ChildItem $instanceHive -ErrorAction SilentlyContinue) {
+    $fn = (Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue).FriendlyName
+    if ($fn -eq $name) { Remove-Item $k.PSPath -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+}
+
 function Invoke-Regsvr($exe, $dll, [switch]$Remove) {
   if (-not (Test-Path $exe)) { return 127 }
   if (-not (Test-Path $dll)) { return 126 }
@@ -78,6 +116,8 @@ function Invoke-Regsvr($exe, $dll, [switch]$Remove) {
 if (-not $NoVideo) {
   if ($Uninstall) {
     Write-Step "Unregistering '$CameraName'..."
+    Remove-CategoryInstance $Instance64 $CameraName
+    Remove-CategoryInstance $Instance32 $CameraName
     [void](Invoke-Regsvr $Regsvr64 $Dll64 -Remove)
     if (Test-Path $Regsvr32) { [void](Invoke-Regsvr $Regsvr32 $Dll32 -Remove) }
     if (Test-CameraRegistered $Instance64 $CameraName) { Write-Bad "64-bit camera still present"; $exit = 1 }
@@ -91,10 +131,12 @@ if (-not $NoVideo) {
       # 64-bit (covers Zoom, Teams, Chrome, Discord, OBS, etc.)
       Write-Step "Registering 64-bit '$CameraName'..."
       $c64 = Invoke-Regsvr $Regsvr64 $Dll64
-      if ($c64 -eq 0 -and (Test-CameraRegistered $Instance64 $CameraName)) {
-        Write-Ok "64-bit camera registered and VERIFIED in DirectShow."
+      $clsid64 = Find-FilterClsid $Dll64 'HKLM:\SOFTWARE\Classes\CLSID'
+      if ($clsid64) { [void](Set-CategoryInstance $Instance64 $clsid64 $CameraName) }
+      if ($clsid64 -and (Test-CameraRegistered $Instance64 $CameraName)) {
+        Write-Ok "64-bit camera registered and VERIFIED in DirectShow (CLSID $clsid64)."
       } else {
-        Write-Bad "64-bit registration failed (regsvr32 exit $c64) or device not found in registry."
+        Write-Bad "64-bit registration failed (regsvr32 exit $c64, clsid $clsid64) or device not found in registry."
         $exit = 1
       }
 
@@ -103,10 +145,12 @@ if (-not $NoVideo) {
         if (Test-Path $Dll32) {
           Write-Step "Registering 32-bit '$CameraName'..."
           $c32 = Invoke-Regsvr $Regsvr32 $Dll32
-          if ($c32 -eq 0 -and (Test-CameraRegistered $Instance32 $CameraName)) {
+          $clsid32 = Find-FilterClsid $Dll32 'HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID'
+          if ($clsid32) { [void](Set-CategoryInstance $Instance32 $clsid32 $CameraName) }
+          if ($clsid32 -and (Test-CameraRegistered $Instance32 $CameraName)) {
             Write-Ok "32-bit camera registered and VERIFIED."
           } else {
-            Write-Warn2 "32-bit registration incomplete (regsvr32 exit $c32). 64-bit apps still work."
+            Write-Warn2 "32-bit registration incomplete (regsvr32 exit $c32, clsid $clsid32). 64-bit apps still work."
           }
         } else {
           Write-Warn2 "32-bit DLL not found; skipping 32-bit registration."

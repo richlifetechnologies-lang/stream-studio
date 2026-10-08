@@ -765,11 +765,22 @@ export default function StreamPage() {
   // Output-device labels are blank until the page holds a media permission, so we
   // request one (and immediately release it) before scanning for the cable.
   const ensureMediaPermission = useCallback(async (): Promise<boolean> => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      s.getTracks().forEach(t => t.stop());
-      return true;
-    } catch { return false; }
+    // Output-device labels stay blank until the page holds ANY media permission.
+    // The mic may be busy/denied, so fall back to video (and then both) — any
+    // successful grant reveals the labels we need to find the VB-Cable sink.
+    const attempts: MediaStreamConstraints[] = [
+      { audio: true },
+      { video: true },
+      { audio: true, video: true },
+    ];
+    for (const c of attempts) {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia(c);
+        s.getTracks().forEach(t => t.stop());
+        return true;
+      } catch { /* try next */ }
+    }
+    return false;
   }, []);
 
   const findCableSink = useCallback(async (): Promise<{ id: string; label: string } | null> => {
@@ -777,6 +788,9 @@ export default function StreamPage() {
       const devs = await navigator.mediaDevices.enumerateDevices();
       return devs.filter(d => d.kind === "audiooutput");
     };
+    const pick = (outs: MediaDeviceInfo[]) =>
+      outs.find(d => /(cable[- ]input|stream studio speaker|speakers \(vb-audio)/i.test(d.label)) ||
+      outs.find(d => /(cable|vb-?audio|vb-?cable|stream studio)/i.test(d.label));
     try {
       let outs = await scan();
       // Labels hidden (no permission yet) or no outputs listed → ask once, rescan.
@@ -784,9 +798,12 @@ export default function StreamPage() {
         await ensureMediaPermission();
         outs = await scan();
       }
-      const cable =
-        outs.find(d => /(cable[- ]input|stream studio speaker)/i.test(d.label)) ||
-        outs.find(d => /(cable|vb-?audio|vb-?cable|stream studio)/i.test(d.label));
+      let cable = pick(outs);
+      // Endpoint enumeration can lag a permission grant; retry briefly.
+      for (let i = 0; !cable && i < 3; i++) {
+        await new Promise(r => setTimeout(r, 300));
+        cable = pick(await scan());
+      }
       return cable ? { id: cable.deviceId, label: cable.label } : null;
     } catch { return null; }
   }, [ensureMediaPermission]);
@@ -803,7 +820,7 @@ export default function StreamPage() {
     if (!cable) {
       toast({
         title: "Virtual microphone not detected",
-        description: "Enable your camera or microphone once (to grant audio permission), then toggle this again. If it still fails, set “CABLE Input (VB-Audio Virtual Cable)” as your Windows default playback device.",
+        description: "The VB-Audio cable output device isn't visible. Allow microphone/camera access when prompted (labels stay hidden until then), then toggle again. If it still fails, install the drivers: Stream Studio → drivers → Install-VirtualDevices.ps1, or set “Speakers (VB-Audio Virtual Cable)” as your Windows default playback device.",
         variant: "destructive",
       });
       setAudioRouteOn(false); return;
