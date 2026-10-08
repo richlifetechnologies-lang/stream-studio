@@ -817,21 +817,32 @@ export default function StreamPage() {
       setAudioRouteOn(false); return;
     }
     const cable = await findCableSink();
-    if (!cable) {
-      toast({
-        title: "Virtual microphone not detected",
-        description: "The VB-Audio cable output device isn't visible. Allow microphone/camera access when prompted (labels stay hidden until then), then toggle again. If it still fails, install the drivers: Stream Studio → drivers → Install-VirtualDevices.ps1, or set “Speakers (VB-Audio Virtual Cable)” as your Windows default playback device.",
-        variant: "destructive",
-      });
-      setAudioRouteOn(false); return;
+    if (cable) {
+      try {
+        await v.setSinkId(cable.id);
+        setCableSinkLabel(cable.label);
+        return;
+      } catch { /* fall through to picker */ }
     }
-    try {
-      await v.setSinkId(cable.id);
-      setCableSinkLabel(cable.label);
-    } catch {
-      toast({ title: "Could not route audio", description: "The output device was rejected.", variant: "destructive" });
-      setAudioRouteOn(false);
+    // Labels can stay hidden (permission/runtime quirks). Last resort: let the
+    // user choose the output device from Chromium's native picker — no guessing.
+    const md = navigator.mediaDevices as MediaDevices & { selectAudioOutput?: () => Promise<MediaDeviceInfo> };
+    if (typeof md.selectAudioOutput === "function") {
+      try {
+        const picked = await md.selectAudioOutput();
+        if (picked && picked.deviceId) {
+          await v.setSinkId(picked.deviceId);
+          setCableSinkLabel(picked.label || "Selected output");
+          return;
+        }
+      } catch { /* user cancelled or unsupported */ }
     }
+    toast({
+      title: "Virtual microphone not detected",
+      description: "The VB-Audio cable output device isn't visible. Allow microphone/camera access when prompted (labels stay hidden until then), then toggle again. If it still fails, install the drivers: Stream Studio → drivers → Install-VirtualDevices.ps1, or set “Speakers (VB-Audio Virtual Cable)” as your Windows default playback device.",
+      variant: "destructive",
+    });
+    setAudioRouteOn(false); return;
   }, [findCableSink, toast]);
 
   const toggleAudioRoute = useCallback(async () => {
