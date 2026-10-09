@@ -428,7 +428,21 @@ async function _startVideoSession(apiKey: string, localStream: MediaStream, onRe
     let settled = false;
     const buf: RTCIceCandidateInit[] = [];
     let hasAnswer = false;
-    const to = setTimeout(() => { if (!settled) { settled = true; reject(new Error(`${APP}: connection timed out`)); } }, 30_000);
+    let to: ReturnType<typeof setTimeout> | undefined;
+    // Every failure path MUST close the socket and drop its handlers. Otherwise a
+    // slow server reply arriving after we gave up would still build a peer
+    // connection and start a billed fal session that nothing holds a handle to
+    // (a "ghost" session that drains balance until the app quits).
+    const abort = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      if (to) clearTimeout(to);
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+      try { ws.close(); } catch { /**/ }
+      try { pc?.close(); } catch { /**/ }
+      reject(err);
+    };
+    to = setTimeout(() => abort(new Error(`${APP}: connection timed out`)), 30_000);
     ws.onopen = () => { send(pp); };
     ws.onmessage = async (ev) => {
       let msg: Record<string, unknown>;
@@ -447,18 +461,18 @@ async function _startVideoSession(apiKey: string, localStream: MediaStream, onRe
         hasAnswer = true;
         await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: msg.sdp }));
         for (const c of buf.splice(0)) await pc.addIceCandidate(new RTCIceCandidate(c));
-        if (!settled) { settled = true; clearTimeout(to); resolve({ close: () => { try { ws.close(); } catch { /**/ } try { pc?.close(); } catch { /**/ } }, send: d => send(d) }); }
+        if (!settled) { settled = true; if (to) clearTimeout(to); resolve({ close: () => { try { ws.close(); } catch { /**/ } try { pc?.close(); } catch { /**/ } }, send: d => send(d) }); }
       } else if ((type === "candidate" || type === "icecandidate") && msg.candidate && pc) {
         const c = msg.candidate as RTCIceCandidateInit;
         if (!hasAnswer) buf.push(c); else if (c.candidate) await pc.addIceCandidate(new RTCIceCandidate(c));
       } else if (type === "error") {
         const detail = msg.message ?? msg.reason ?? msg.error ?? "Unknown error";
-        if (!settled) { settled = true; clearTimeout(to); reject(new Error(`${APP} error: ${detail}`)); }
+        abort(new Error(`${APP} error: ${detail}`));
       }
     };
-    ws.onerror = () => { if (!settled) { settled = true; clearTimeout(to); reject(new Error(`${APP}: connection error`)); } };
+    ws.onerror = () => abort(new Error(`${APP}: connection error`));
     ws.onclose = ev => {
-      if (!settled) { settled = true; clearTimeout(to); reject(new Error(`${APP}: connection closed (${ev.code})`)); }
+      if (!settled) abort(new Error(`${APP}: connection closed (${ev.code})`));
       else if (ev.code !== 1000) onDisconnect();
     };
   });
@@ -576,6 +590,9 @@ export default function StreamPage() {
   const remoteVideoRef  = useRef<HTMLVideoElement | null>(null);
   const localStreamRef  = useRef<MediaStream|null>(null);
   const videoSessionRef = useRef<VideoSession|null>(null);
+  // Monotonic session generation. A socket that dies late (a previous attempt's
+  // ghost) must not tear down the session the user is watching now.
+  const sessionGenRef = useRef(0);
   const syncPipeRef     = useRef<AudioSyncPipeline|null>(null);
   const clonerRef       = useRef<VoiceCloningEngine|null>(null);
   const timerRef        = useRef<ReturnType<typeof setInterval>|null>(null);
@@ -925,6 +942,7 @@ export default function StreamPage() {
 
   // ─── Teardown ──────────────────────────────────────────────────────────────
   const teardownStream = useCallback(async () => {
+    sessionGenRef.current++;
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     isStartingRef.current = false;
     videoSessionRef.current?.close(); videoSessionRef.current = null;
@@ -940,6 +958,10 @@ export default function StreamPage() {
     setAudioActive(false); setSyncDelay(0.8); setVuLevel(0);
     setVcActive(false); setVcVu(0); setVcAnalyser(null);
   }, []);
+
+  // Route changes (e.g. opening Settings mid-stream) unmount this page. Without
+  // this the fal WebSocket would stay open and keep billing in the background.
+  useEffect(() => { return () => { void teardownStream(); }; }, [teardownStream]);
 
   // ─── Start stream ──────────────────────────────────────────────────────────
   const handleStartStream = useCallback(async () => {
@@ -983,18 +1005,24 @@ export default function StreamPage() {
 
       // ── Start video session ────────────────────────────────────────────
       if (needsVideo) {
+        const gen = ++sessionGenRef.current;
         const session = await _startVideoSession(
           apiKey, sendStream,
           remote => {
+            if (sessionGenRef.current !== gen) return;
             remoteStreamRef.current = remote;
             if (remoteVideoRef.current) remoteVideoRef.current.srcObject = remote;
             window.__ssRemoteStream = remote;
             _notifyPopup(popoutRef.current); _notifyPopup(obsWindowRef.current); _notifyPopup(obsPortraitWindowRef.current);
             setConnStatus("connected");
           },
-          () => { teardownStream(); toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" }); },
+          () => {
+            if (sessionGenRef.current !== gen) return;
+            teardownStream(); toast({ title: "Stream disconnected", description: "Connection lost. Try again.", variant: "destructive" });
+          },
           prompt, refImageB64,
         );
+        if (sessionGenRef.current !== gen) { session.close(); return; }
         videoSessionRef.current = session;
       } else {
         // Audio-only: start mic preview
