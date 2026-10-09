@@ -803,27 +803,39 @@ export default function StreamPage() {
   }, []);
 
   const findCableSink = useCallback(async (): Promise<{ id: string; label: string } | null> => {
-    const scan = async () => {
-      const devs = await navigator.mediaDevices.enumerateDevices();
-      return devs.filter(d => d.kind === "audiooutput");
+    const scan = async (): Promise<MediaDeviceInfo[]> => {
+      try { return await navigator.mediaDevices.enumerateDevices(); } catch { return []; }
     };
-    const pick = (outs: MediaDeviceInfo[]) =>
+    const outsOf = (devs: MediaDeviceInfo[]) => devs.filter(d => d.kind === "audiooutput");
+    const byLabel = (outs: MediaDeviceInfo[]) =>
       outs.find(d => /(cable[- ]input|stream studio speaker|speakers \(vb-audio)/i.test(d.label)) ||
       outs.find(d => /(cable|vb-?audio|vb-?cable|stream studio)/i.test(d.label));
+    // Chromium keeps the cable's OUTPUT label "(hidden)", so label matching alone
+    // can never find it. But the cable's INPUT endpoint ("CABLE Output (VB-Audio
+    // Virtual Cable)") DOES get a real label once mic permission is granted, and
+    // both ends of the virtual cable share one groupId. So we find the cable by
+    // its input, then jump across to the matching (hidden) output. Label-free.
+    const byGroup = (devs: MediaDeviceInfo[]) => {
+      const cableIn = devs.find(d => d.kind === "audioinput" && d.groupId &&
+        /(cable|vb-?audio|vb-?cable|stream studio)/i.test(d.label));
+      if (!cableIn) return undefined;
+      return outsOf(devs).find(d => d.groupId === cableIn.groupId);
+    };
     try {
-      let outs = await scan();
-      // Labels hidden (no permission yet) or no outputs listed → ask once, rescan.
-      if (outs.length === 0 || outs.every(d => !d.label)) {
+      let devs = await scan();
+      // Input labels are hidden until a permission grant reveals them.
+      if (devs.filter(d => d.kind === "audioinput").every(d => !d.label)) {
         await ensureMediaPermission();
-        outs = await scan();
+        devs = await scan();
       }
-      let cable = pick(outs);
+      let hit = byLabel(outsOf(devs)) || byGroup(devs);
       // Endpoint enumeration can lag a permission grant; retry briefly.
-      for (let i = 0; !cable && i < 3; i++) {
+      for (let i = 0; !hit && i < 3; i++) {
         await new Promise(r => setTimeout(r, 300));
-        cable = pick(await scan());
+        devs = await scan();
+        hit = byLabel(outsOf(devs)) || byGroup(devs);
       }
-      return cable ? { id: cable.deviceId, label: cable.label } : null;
+      return hit ? { id: hit.deviceId, label: hit.label || "VB-Audio Virtual Cable (auto-detected)" } : null;
     } catch { return null; }
   }, [ensureMediaPermission]);
 
@@ -849,21 +861,10 @@ export default function StreamPage() {
       try {
         await v.setSinkId(cable.id);
         setCableSinkLabel(cable.label);
+        // Pin it so reconnects and re-toggles reuse the same (hidden-label) sink.
+        chooseManualSink(cable.id);
         return;
-      } catch { /* fall through to picker */ }
-    }
-    // Labels can stay hidden (permission/runtime quirks). Last resort: let the
-    // user choose the output device from Chromium's native picker — no guessing.
-    const md = navigator.mediaDevices as MediaDevices & { selectAudioOutput?: () => Promise<MediaDeviceInfo> };
-    if (typeof md.selectAudioOutput === "function") {
-      try {
-        const picked = await md.selectAudioOutput();
-        if (picked && picked.deviceId) {
-          await v.setSinkId(picked.deviceId);
-          setCableSinkLabel(picked.label || "Selected output");
-          return;
-        }
-      } catch { /* user cancelled or unsupported */ }
+      } catch { /* fall through to diagnostics */ }
     }
     // Diagnostics: report what the runtime actually sees so failures are
     // self-explanatory instead of a generic "not detected".
@@ -876,11 +877,11 @@ export default function StreamPage() {
     } catch { diag = " Could not enumerate devices."; }
     toast({
       title: "Virtual microphone not detected",
-      description: `The VB-Audio cable output device isn't visible.${diag} Allow microphone/camera access when prompted, then toggle again. If it still fails, install the drivers: Stream Studio → drivers → Install-VirtualDevices.ps1, or set “Speakers (VB-Audio Virtual Cable)” as your Windows default playback device.`,
+      description: `The VB-Audio cable output device isn't visible.${diag} Pick it manually from the “Audio out” dropdown in the Broadcast panel (choose the unlabeled / VB-Cable entry), or set “Speakers (VB-Audio Virtual Cable)” as your Windows default playback device.`,
       variant: "destructive",
     });
     setAudioRouteOn(false); return;
-  }, [findCableSink, toast, manualSinkId, audioOutputs]);
+  }, [findCableSink, toast, manualSinkId, audioOutputs, chooseManualSink]);
 
   const toggleAudioRoute = useCallback(async () => {
     const next = !audioRouteOn;
