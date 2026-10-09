@@ -551,6 +551,25 @@ export default function StreamPage() {
   const [vcamReady, setVcamReady]         = useState(false);
   const [audioRouteOn, setAudioRouteOn]   = useState(false);
   const [cableSinkLabel, setCableSinkLabel] = useState("");
+  // Manual override for the audio sink: the VB-Cable endpoint can appear with a
+  // hidden label (permissions/runtime), so name-matching alone is unreliable.
+  // The user can pin the exact output device here; persisted across sessions.
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [manualSinkId, setManualSinkId] = useState<string>(() => {
+    try { return localStorage.getItem("ss_audio_sink") || ""; } catch { return ""; }
+  });
+  const chooseManualSink = useCallback((id: string) => {
+    setManualSinkId(id);
+    try { localStorage.setItem("ss_audio_sink", id); } catch { /**/ }
+  }, []);
+  const refreshAudioOutputs = useCallback(async () => {
+    try { setAudioOutputs((await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audiooutput")); } catch { /**/ }
+  }, []);
+  useEffect(() => {
+    refreshAudioOutputs();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refreshAudioOutputs);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refreshAudioOutputs);
+  }, [refreshAudioOutputs]);
 
   // ── Refs ──────────────────────────────────────────────────────────────────
   const localVideoRef   = useRef<HTMLVideoElement | null>(null);
@@ -816,6 +835,15 @@ export default function StreamPage() {
       toast({ title: "Audio routing unsupported", description: "This runtime can't select an output device.", variant: "destructive" });
       setAudioRouteOn(false); return;
     }
+    // 1) User-pinned output device (works even when labels are hidden).
+    if (manualSinkId) {
+      try {
+        await v.setSinkId(manualSinkId);
+        const lbl = audioOutputs.find(d => d.deviceId === manualSinkId)?.label;
+        setCableSinkLabel(lbl || "Pinned output");
+        return;
+      } catch { /* pinned device gone; fall through to auto-detect */ }
+    }
     const cable = await findCableSink();
     if (cable) {
       try {
@@ -852,7 +880,7 @@ export default function StreamPage() {
       variant: "destructive",
     });
     setAudioRouteOn(false); return;
-  }, [findCableSink, toast]);
+  }, [findCableSink, toast, manualSinkId, audioOutputs]);
 
   const toggleAudioRoute = useCallback(async () => {
     const next = !audioRouteOn;
@@ -1501,6 +1529,20 @@ export default function StreamPage() {
               </p>
             </div>
             {toggleBtn(audioRouteOn, toggleAudioRoute, false, "Toggle Stream Studio Microphone")}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, color: "hsl(222 25% 45%)", fontFamily: "'Rajdhani',sans-serif", flexShrink: 0 }}>Audio out:</span>
+            <select
+              value={manualSinkId}
+              onChange={e => chooseManualSink(e.target.value)}
+              title="Which Windows output the AI audio is sent to. Pick the VB-Cable entry if auto-detect fails."
+              style={{ flex: 1, minWidth: 0, background: "hsl(222 40% 8%)", color: "hsl(190 80% 90%)", border: "1px solid hsl(222 40% 16%)", borderRadius: 8, padding: "6px 8px", fontSize: 11, fontFamily: "'Rajdhani',sans-serif" }}>
+              <option value="">Auto-detect (VB-Cable)</option>
+              {audioOutputs.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>{d.label || `Output ${i + 1} (unlabeled — likely VB-Cable)`}</option>
+              ))}
+            </select>
           </div>
         </div>
 
