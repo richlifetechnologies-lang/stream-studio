@@ -1,6 +1,6 @@
 {
   "name": "stream-studio",
-  "version": "1.22.6",
+  "version": "1.22.7",
   "description": "Real-time AI webcam transformation powered by fal.ai Lucy 2.5",
   "main": "dist-electron/main.js",
   "author": "Rich Life Technologies",
@@ -71,6 +71,11 @@
         "from": "drivers",
         "to": "drivers",
         "filter": ["*.exe", "*.nsh", "*.md", "*.ps1", "**/*.dll", "**/*.exe", "**/*.ps1", "**/*.md"]
+      },
+      {
+        "from": "drivers/vbcable",
+        "to": "drivers/vbcable",
+        "filter": ["**/*"]
       }
     ],
     "extraMetadata": {

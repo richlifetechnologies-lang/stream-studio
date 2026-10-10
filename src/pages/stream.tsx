@@ -478,6 +478,63 @@ async function _startVideoSession(apiKey: string, localStream: MediaStream, onRe
   });
 }
 
+// ─── Cable discovery by acoustic loopback (label-free, groupId-free) ────────
+// Chromium hides the VB-Cable render endpoint's label and gives its input and
+// output different groupIds, so neither names nor groups identify it. But the
+// cable is a loopback pair: audio played INTO its render endpoint comes OUT of
+// its capture endpoint. So we play a probe tone into each unlabeled output and
+// watch the cable capture inputs for level; the output that is heard is the
+// cable. This needs no labels and cannot pick the wrong device.
+async function _measurePeak(an: AnalyserNode, ms: number): Promise<number> {
+  const buf = new Uint8Array(an.fftSize);
+  let mx = 0;
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    an.getByteTimeDomainData(buf as Uint8Array<ArrayBuffer>);
+    for (let i = 0; i < buf.length; i++) { const d = Math.abs(buf[i] - 128); if (d > mx) mx = d; }
+    await new Promise(r => setTimeout(r, 40));
+  }
+  return mx;
+}
+
+async function _loopbackPick(cands: MediaDeviceInfo[], inputs: MediaDeviceInfo[]): Promise<MediaDeviceInfo | null> {
+  if (!cands.length) return null;
+  type Tap = { an: AnalyserNode; ctx: AudioContext };
+  const taps: Tap[] = [];
+  for (const inp of inputs.slice(0, 4)) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: inp.deviceId } } });
+      const ctx = new AudioContext();
+      const an = ctx.createAnalyser(); an.fftSize = 1024;
+      ctx.createMediaStreamSource(s).connect(an);
+      taps.push({ an, ctx });
+    } catch { /* skip unusable input */ }
+  }
+  if (!taps.length) return null;
+  let winner: MediaDeviceInfo | null = null;
+  for (const c of cands) {
+    let ctx: AudioContext | null = null;
+    let osc: OscillatorNode | null = null;
+    try {
+      ctx = new AudioContext();
+      const sink = ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
+      if (typeof sink.setSinkId !== "function") break;
+      await sink.setSinkId(c.deviceId);
+      osc = ctx.createOscillator(); osc.frequency.value = 440;
+      const g = ctx.createGain(); g.gain.value = 0.6;
+      osc.connect(g); g.connect(ctx.destination);
+      const base = await Promise.all(taps.map(t => _measurePeak(t.an, 150)));
+      osc.start();
+      const live = await Promise.all(taps.map(t => _measurePeak(t.an, 500)));
+      osc.stop(); osc = null;
+      if (live.some((v, i) => v > 24 && v > base[i] + 12)) { winner = c; break; }
+    } catch { /* candidate unusable; try next */ }
+    finally { try { osc?.stop(); } catch { /**/ } try { void ctx?.close(); } catch { /**/ } }
+  }
+  taps.forEach(t => { try { void t.ctx.close(); } catch { /**/ } });
+  return winner;
+}
+
 function _updatePrompt(session: VideoSession, prompt: string, refB64?: string | null) {
   try { session.send({ prompt, ...(refB64 ? { reference_image_url: `data:image/jpeg;base64,${refB64}` } : {}) }); } catch { /**/ }
 }
@@ -851,6 +908,19 @@ export default function StreamPage() {
         await new Promise(r => setTimeout(r, 300));
         devs = await scan();
         hit = byLabel(outsOf(devs)) || byGroup(devs);
+      }
+      // Definitive, label-free fallback: probe unlabeled outputs acoustically.
+      // The cable is a loopback pair, so the output whose probe tone is heard on
+      // the cable capture input IS the cable. Cannot pick the wrong device.
+      if (!hit) {
+        const cands = outsOf(devs).filter(d => !d.label);
+        if (cands.length) {
+          const cableIns = devs.filter(d => d.kind === "audioinput" && /(cable|vb-?audio|vb-?cable|stream studio)/i.test(d.label));
+          const targetIns = cableIns.length ? cableIns : devs.filter(d => d.kind === "audioinput" && !d.label);
+          const verified = await _loopbackPick(cands, targetIns);
+          if (verified) hit = verified;
+          else if (cands.length === 1 && targetIns.length === 0) hit = cands[0];
+        }
       }
       return hit ? { id: hit.deviceId, label: hit.label || "VB-Audio Virtual Cable (auto-detected)" } : null;
     } catch { return null; }

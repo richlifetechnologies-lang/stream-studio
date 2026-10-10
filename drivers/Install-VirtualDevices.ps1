@@ -210,7 +210,10 @@ if (-not $NoVideo) {
 
 # ── AUDIO: VB-Audio Virtual Cable ("Stream Studio Microphone") ────────────────
 if (-not $NoAudio) {
-  $vbSetup = Join-Path $Root "VBCable_Setup_x64.exe"
+  # The setup exe reads its .inf/.sys/.cat siblings from its own folder, so the
+  # full pack lives in drivers\vbcable\ (exe alone fails: "Missing 'inf' file").
+  $vbSetup = Join-Path $Root "vbcable\VBCABLE_Setup_x64.exe"
+  if (-not (Test-Path $vbSetup)) { $vbSetup = Join-Path $Root "VBCable_Setup_x64.exe" }
   if (-not (Test-Path $vbSetup)) { $vbSetup = Join-Path $Root "VBCABLE_Setup_x64.exe" }
 
   if ($Uninstall) {
