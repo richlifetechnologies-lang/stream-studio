@@ -1307,7 +1307,7 @@ export default function StreamPage() {
                     <span style={{ fontSize: 10, fontWeight: 700, color: C, fontFamily: "monospace" }}>● OBS WINDOW OPEN</span>
                     <button onClick={() => setObsInstructions(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", fontSize: 16 }}>×</button>
                   </div>
-                  <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>In OBS → Sources → + → Window Capture → select "Stream Studio OBS".</p>
+                  <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>In OBS → Sources → + → Window Capture → select "Stream Studio OBS". For AI audio add Sources → + → Audio Input Capture → "CABLE Output (VB-Audio Virtual Cable)".</p>
                 </div>
               )}
             </div>
@@ -1645,9 +1645,13 @@ export default function StreamPage() {
           </div>
         </div>
 
-        <p style={{ fontSize: 10, color: "hsl(222 25% 42%)", fontFamily: "'Rajdhani',sans-serif", marginTop: 10, lineHeight: 1.5 }}>
-          Install the drivers once (Stream Studio → drivers → Install-VirtualDevices.ps1), then pick “Stream Studio Camera” / “Stream Studio Microphone” inside your calling app.
-        </p>
+        <div style={{ marginTop: 10, padding: "8px 10px", borderRadius: 10, background: "hsl(222 40% 8%)", border: "1px solid hsl(222 40% 12%)", fontSize: 10, color: "hsl(222 25% 55%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.55 }}>
+          <p style={{ fontWeight: 700, color: "hsl(190 80% 90%)", marginBottom: 4 }}>What to pick inside OBS / Zoom / Teams</p>
+          <p>• VIDEO → <span style={{ color: C }}>Stream Studio Camera</span> = the AI video. Your physical webcam is listed next to it — don't pick that one for AI.</p>
+          <p>• AUDIO (AI voice) → <span style={{ color: VC }}>CABLE Output (VB-Audio Virtual Cable)</span>. On fresh installs it is named <span style={{ color: VC }}>Stream Studio Microphone</span> — same device, two possible names.</p>
+          <p>• AUDIO (your own voice) → your Realtek / USB mic. Add it only if you want yourself heard as well.</p>
+          <p style={{ marginTop: 4 }}>OBS recipe: Sources → + → Video Capture Device → “Stream Studio Camera”; then Sources → + → Audio Input Capture → “CABLE Output (VB-Audio Virtual Cable)”. If you hear echo, mute OBS “Desktop Audio”.</p>
+        </div>
       </div>
     );
   };
