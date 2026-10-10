@@ -45,45 +45,71 @@ function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Bu
   });
 }
 
-// ─── Streaming download with progress ────────────────────────────────────────
+// ─── Streaming download with progress, stall watchdog and resume ────────────
+// A raw https.get with no timeout hangs forever if the CDN socket stalls mid
+// transfer (progress freezes, promise never settles). So: kill the socket after
+// IDLE_MS without bytes, retry with an HTTP Range resume of the partial file,
+// and destroy redirect responses instead of leaking them.
 function downloadFile(
   url: string,
   destPath: string,
   onProgress: (percent: number, transferred: number, total: number) => void
 ): Promise<void> {
+  const IDLE_MS = 20_000;
+  const MAX_ATTEMPTS = 4;
   return new Promise((resolve, reject) => {
-    function doGet(u: string) {
+    let attempt = 0;
+    let settled = false;
+    const done = (err?: Error) => { if (settled) return; settled = true; err ? reject(err) : resolve(); };
+
+    const fetchOnce = (u: string, start: number): Promise<void> => new Promise((res, rej) => {
       const lib = u.startsWith("https") ? https : http;
-      (lib as typeof https).get(
-        u,
-        { headers: { "User-Agent": `stream-studio/${app.getVersion()}` } },
-        (res) => {
-          if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
-            doGet(res.headers.location);
-            return;
-          }
-          if (res.statusCode !== 200) {
-            reject(new Error(`Download failed with status ${res.statusCode}`));
-            return;
-          }
-
-          const total = parseInt(res.headers["content-length"] ?? "0", 10);
-          let transferred = 0;
-          const dest = fs.createWriteStream(destPath);
-
-          res.on("data", (chunk: Buffer) => {
-            transferred += chunk.length;
-            if (total > 0) onProgress(Math.round((transferred / total) * 100), transferred, total);
-          });
-
-          res.pipe(dest);
-          dest.on("finish", resolve);
-          dest.on("error", reject);
-          res.on("error", (err) => { dest.destroy(); reject(err); });
+      const headers: Record<string, string> = { "User-Agent": `stream-studio/${app.getVersion()}` };
+      if (start > 0) headers.Range = `bytes=${start}-`;
+      const req = (lib as typeof https).get(u, { headers }, (resp) => {
+        if ([301, 302, 307, 308].includes(resp.statusCode ?? 0) && resp.headers.location) {
+          resp.destroy();
+          fetchOnce(resp.headers.location, start).then(res, rej);
+          return;
         }
-      ).on("error", reject);
-    }
-    doGet(url);
+        const partial = resp.statusCode === 206;
+        if (resp.statusCode !== 200 && !partial) {
+          resp.destroy(); rej(new Error(`Download failed with status ${resp.statusCode}`)); return;
+        }
+        let total = 0;
+        if (partial) {
+          const m = /\/(\d+)$/.exec(resp.headers["content-range"] ?? "");
+          total = m ? parseInt(m[1], 10) : 0;
+        } else {
+          total = parseInt(resp.headers["content-length"] ?? "0", 10);
+        }
+        let transferred = partial ? start : 0;
+        const dest = fs.createWriteStream(destPath, { flags: partial ? "a" : "w" });
+        req.setTimeout(IDLE_MS, () => req.destroy(new Error("download stalled")));
+        resp.on("data", (c: Buffer) => {
+          transferred += c.length;
+          if (total > 0) onProgress(Math.min(99, Math.round((transferred / total) * 100)), transferred, total);
+        });
+        resp.pipe(dest);
+        dest.on("finish", () => dest.close(() => res()));
+        dest.on("error", rej);
+        resp.on("error", rej);
+      });
+      req.on("error", rej);
+    });
+
+    const tryAttempt = (): void => {
+      attempt++;
+      let start = 0;
+      try { start = fs.existsSync(destPath) ? fs.statSync(destPath).size : 0; } catch { start = 0; }
+      fetchOnce(url, start)
+        .then(() => done())
+        .catch((err: Error) => {
+          if (attempt >= MAX_ATTEMPTS) { done(err); return; }
+          setTimeout(tryAttempt, 1500);
+        });
+    };
+    tryAttempt();
   });
 }
 
