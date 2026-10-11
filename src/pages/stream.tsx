@@ -1577,6 +1577,25 @@ export default function StreamPage() {
           </p>
         </div>
       )}
+
+      {/* Local monitor — only meaningful where cloning actually runs */}
+      <div style={{ marginTop: 10, background: "hsl(222 44% 6%)", border: `1px solid ${voiceMonitor ? "hsl(265 90% 65% / 0.35)" : "hsl(222 40% 11%)"}`, borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: voiceMonitor ? "hsl(265 90% 65% / 0.15)" : "hsl(222 40% 10%)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Headphones style={{ width: 15, height: 15, color: voiceMonitor ? VC : "hsl(222 25% 45%)" }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em", marginBottom: 3 }}>Hear my cloned voice</p>
+          <p style={{ fontSize: 11, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.4 }}>
+            {voiceMonitor
+              ? "On — the clone also plays in your own speakers. Wear headphones; loudspeakers let your mic feed it back into the call."
+              : "Off — the clone goes to the calling app only. You hear yourself as usual."}
+          </p>
+        </div>
+        <button onClick={toggleVoiceMonitor} aria-pressed={voiceMonitor} title="Toggle local monitor"
+          style={{ flexShrink: 0, width: 46, height: 24, borderRadius: 14, border: "none", cursor: "pointer", background: voiceMonitor ? VC : "hsl(222 30% 20%)", position: "relative", transition: "background 0.15s" }}>
+          <span style={{ position: "absolute", top: 3, left: voiceMonitor ? 25 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
+        </button>
+      </div>
     </div>
   );
 
@@ -1641,25 +1660,6 @@ export default function StreamPage() {
         <button onClick={toggleNoiseCancel} aria-pressed={noiseCancel} title="Toggle noise cancellation"
           style={{ flexShrink: 0, width: 46, height: 24, borderRadius: 14, border: "none", cursor: "pointer", background: noiseCancel ? C : "hsl(222 30% 20%)", position: "relative", transition: "background 0.15s" }}>
           <span style={{ position: "absolute", top: 3, left: noiseCancel ? 25 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
-        </button>
-      </div>
-
-      {/* Local monitor for the cloned voice */}
-      <div style={{ background: "hsl(222 44% 6%)", border: `1px solid ${voiceMonitor ? "hsl(265 90% 65% / 0.35)" : "hsl(222 40% 11%)"}`, borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ width: 32, height: 32, borderRadius: 8, background: voiceMonitor ? "hsl(265 90% 65% / 0.15)" : "hsl(222 40% 10%)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-          <Headphones style={{ width: 15, height: 15, color: voiceMonitor ? VC : "hsl(222 25% 45%)" }} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <p style={{ fontSize: 11, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em", marginBottom: 3 }}>Hear my cloned voice</p>
-          <p style={{ fontSize: 11, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.4 }}>
-            {voiceMonitor
-              ? "On — the clone also plays in your own speakers. Wear headphones; loudspeakers let your mic feed it back into the call."
-              : "Off — the clone goes to the calling app only. You hear yourself as usual."}
-          </p>
-        </div>
-        <button onClick={toggleVoiceMonitor} aria-pressed={voiceMonitor} title="Toggle local monitor"
-          style={{ flexShrink: 0, width: 46, height: 24, borderRadius: 14, border: "none", cursor: "pointer", background: voiceMonitor ? VC : "hsl(222 30% 20%)", position: "relative", transition: "background 0.15s" }}>
-          <span style={{ position: "absolute", top: 3, left: voiceMonitor ? 25 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
         </button>
       </div>
     </>
