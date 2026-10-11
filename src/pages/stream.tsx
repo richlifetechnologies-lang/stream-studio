@@ -240,6 +240,7 @@ class VoiceCloningEngine {
   private videoDelay = 0.8;
   private analyserCtx: AudioContext | null = null;
   private analyserNode: AnalyserNode | null = null;
+  private outDest: MediaStreamAudioDestinationNode | null = null;
 
   apiKey  = "";
   voiceId = BUILTIN_VOICES[0].id;
@@ -252,6 +253,7 @@ class VoiceCloningEngine {
     if (this.running) return;
     this.running  = true;
     this.audioCtx = new AudioContext();
+    this.outDest  = this.audioCtx.createMediaStreamDestination();
     this.nextPlayAt = this.audioCtx.currentTime + this.videoDelay + 0.1;
 
     // Analyser for waveform — uses the same mic stream
@@ -297,7 +299,7 @@ class VoiceCloningEngine {
       const decoded = await this.audioCtx.decodeAudioData(buf);
       const playAt = Math.max(this.audioCtx.currentTime + this.videoDelay, this.nextPlayAt);
       const src = this.audioCtx.createBufferSource();
-      src.buffer = decoded; src.connect(this.audioCtx.destination); src.start(playAt);
+      src.buffer = decoded; src.connect(this.outDest!); src.start(playAt);
       this.nextPlayAt = playAt + decoded.duration;
       const data = decoded.getChannelData(0);
       let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
@@ -309,8 +311,11 @@ class VoiceCloningEngine {
 
   getAnalyser(): AnalyserNode | null { return this.analyserNode; }
 
+  getOutputStream(): MediaStream | null { return this.outDest?.stream ?? null; }
+
   stop() {
     this.running = false;
+    this.outDest = null;
     try { this.recorder?.stop(); } catch { /* ignore */ }
     this.recorder = null;
     try { this.audioCtx?.close(); } catch { /* ignore */ }
@@ -645,6 +650,8 @@ export default function StreamPage() {
   // ── Refs ──────────────────────────────────────────────────────────────────
   const localVideoRef   = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef  = useRef<HTMLVideoElement | null>(null);
+  // Plays the cloned voice; routed to the same output as the AI video.
+  const cloneAudioRef   = useRef<HTMLAudioElement | null>(null);
   const localStreamRef  = useRef<MediaStream|null>(null);
   const videoSessionRef = useRef<VideoSession|null>(null);
   // Monotonic session generation. A socket that dies late (a previous attempt's
@@ -927,17 +934,19 @@ export default function StreamPage() {
   }, [ensureMediaPermission]);
 
   const applyAudioRoute = useCallback(async (on: boolean) => {
-    const v = remoteVideoRef.current as (HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> }) | null;
-    if (!v) return;
-    if (!on) { try { await v.setSinkId?.(""); } catch { /* ignore */ } setCableSinkLabel(""); return; }
-    if (typeof v.setSinkId !== "function") {
+    type SinkEl = HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> };
+    const els = [remoteVideoRef.current, cloneAudioRef.current].filter(Boolean) as SinkEl[];
+    if (!els.length) return;
+    const setSinks = async (id: string) => { for (const el of els) await el.setSinkId!(id); };
+    if (!on) { for (const el of els) { try { await el.setSinkId?.(""); } catch { /* ignore */ } } setCableSinkLabel(""); return; }
+    if (els.some(el => typeof el.setSinkId !== "function")) {
       toast({ title: "Audio routing unsupported", description: "This runtime can't select an output device.", variant: "destructive" });
       setAudioRouteOn(false); return;
     }
     // 1) User-pinned output device (works even when labels are hidden).
     if (manualSinkId) {
       try {
-        await v.setSinkId(manualSinkId);
+        await setSinks(manualSinkId);
         const lbl = audioOutputs.find(d => d.deviceId === manualSinkId)?.label;
         setCableSinkLabel(lbl || "Pinned output");
         return;
@@ -946,7 +955,7 @@ export default function StreamPage() {
     const cable = await findCableSink();
     if (cable) {
       try {
-        await v.setSinkId(cable.id);
+        await setSinks(cable.id);
         setCableSinkLabel(cable.label);
         // Pin it so reconnects and re-toggles reuse the same (hidden-label) sink.
         chooseManualSink(cable.id);
@@ -976,10 +985,18 @@ export default function StreamPage() {
     await applyAudioRoute(next);
   }, [audioRouteOn, applyAudioRoute]);
 
-  // Re-apply routing when the AI output (re)connects, since srcObject changes.
+  // Re-apply routing when the AI output (re)connects, since srcObject changes,
+  // and when the cloned voice stream starts (its audio element mounts then).
   useEffect(() => {
     if (audioRouteOn && connStatus === "connected") applyAudioRoute(true);
-  }, [connStatus, audioRouteOn, applyAudioRoute]);
+  }, [connStatus, audioRouteOn, applyAudioRoute, vcActive]);
+
+  // While cloning, the cable must carry the persona voice only — the raw voice
+  // round-tripped through the AI session is silenced on the clone tabs.
+  useEffect(() => {
+    const v = remoteVideoRef.current;
+    if (v) v.muted = vcActive;
+  }, [vcActive, connStatus]);
 
   // ─── Mic-only preview for audio-only tab ───────────────────────────────────
   const startMicPreview = useCallback(async () => {
@@ -1017,6 +1034,7 @@ export default function StreamPage() {
     isStartingRef.current = false;
     videoSessionRef.current?.close(); videoSessionRef.current = null;
     clonerRef.current?.stop(); clonerRef.current = null;
+    if (cloneAudioRef.current) { try { cloneAudioRef.current.pause(); } catch { /**/ } cloneAudioRef.current.srcObject = null; }
     syncPipeRef.current?.stop(); syncPipeRef.current = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     remoteStreamRef.current = null; window.__ssRemoteStream = null;
@@ -1112,6 +1130,11 @@ export default function StreamPage() {
         clonerRef.current = cloner;
         setVcAnalyser(cloner.getAnalyser());
         setVcActive(true);
+        const out = cloner.getOutputStream();
+        if (out && cloneAudioRef.current) {
+          cloneAudioRef.current.srcObject = out;
+          void cloneAudioRef.current.play().catch(() => {});
+        }
       }
 
       sessionStart();
@@ -1511,6 +1534,9 @@ export default function StreamPage() {
           <div style={{ height: 5, background: "hsl(222 40% 11%)", borderRadius: 3, overflow: "hidden", marginTop: 6 }}>
             <div style={{ height: "100%", borderRadius: 3, transition: "width 0.08s", width: `${vcVu}%`, background: VC }} />
           </div>
+          <p style={{ marginTop: 6, fontSize: 10, color: "hsl(265 60% 72%)" }}>
+            With cloning on, this cloned voice — not your raw voice — is what the cable sends on “Video + Audio” and “Audio Call”.
+          </p>
         </div>
       )}
     </div>
@@ -1650,6 +1676,7 @@ export default function StreamPage() {
           <p>• VIDEO → <span style={{ color: C }}>Stream Studio Camera</span> = the AI video. Your physical webcam is listed next to it — don't pick that one for AI.</p>
           <p>• AUDIO (AI voice) → <span style={{ color: VC }}>CABLE Output (VB-Audio Virtual Cable)</span>. On fresh installs it is named <span style={{ color: VC }}>Stream Studio Microphone</span> — same device, two possible names.</p>
           <p>• AUDIO (your own voice) → your Realtek / USB mic. Add it only if you want yourself heard as well.</p>
+          <p>• On “Video + Audio” and “Audio Call”, with voice cloning on the cable carries the <span style={{ color: VC }}>cloned voice</span>; your raw voice is muted on the outgoing side. “Video Call” always sends your real voice.</p>
           <p style={{ marginTop: 4 }}>OBS recipe: Sources → + → Video Capture Device → “Stream Studio Camera”; then Sources → + → Audio Input Capture → “CABLE Output (VB-Audio Virtual Cable)”. If you hear echo, mute OBS “Desktop Audio”.</p>
         </div>
       </div>
@@ -1693,6 +1720,9 @@ export default function StreamPage() {
   // ─── RENDER ────────────────────────────────────────────────────────────────
   return (
     <AppLayout>
+      {/* Cloned voice playback — routed to the virtual microphone so calling
+          apps and OBS hear the persona voice instead of the raw mic. */}
+      <audio ref={cloneAudioRef} autoPlay style={{ display: "none" }} />
 
       {/* Missing key banner */}
       {credsMissing && needsVideo && (
