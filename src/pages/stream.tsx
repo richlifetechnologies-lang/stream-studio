@@ -241,6 +241,8 @@ class VoiceCloningEngine {
   private analyserCtx: AudioContext | null = null;
   private analyserNode: AnalyserNode | null = null;
   private outDest: MediaStreamAudioDestinationNode | null = null;
+  private monitorGain: GainNode | null = null;
+  private monitored = false;
 
   apiKey  = "";
   voiceId = BUILTIN_VOICES[0].id;
@@ -248,6 +250,24 @@ class VoiceCloningEngine {
   onError?: (msg: string) => void;
 
   setVideoDelay(d: number) { this.videoDelay = d; }
+
+  // Send the cloned voice to the local speakers as well as the cable. Loudspeakers
+  // + open mic can feed it back into the call; headphones are always safe.
+  setMonitor(on: boolean) {
+    if (on === this.monitored) return;
+    this.monitored = on;
+    if (!this.audioCtx) return;
+    if (on) {
+      if (!this.outDest) return;
+      if (!this.monitorGain) {
+        this.monitorGain = this.audioCtx.createGain();
+        this.outDest.connect(this.monitorGain);
+      }
+      this.monitorGain.connect(this.audioCtx.destination);
+    } else if (this.monitorGain) {
+      this.monitorGain.disconnect(this.audioCtx.destination);
+    }
+  }
 
   async start(micStream: MediaStream) {
     if (this.running) return;
@@ -316,6 +336,7 @@ class VoiceCloningEngine {
   stop() {
     this.running = false;
     this.outDest = null;
+    this.monitorGain = null; this.monitored = false;
     try { this.recorder?.stop(); } catch { /* ignore */ }
     this.recorder = null;
     try { this.audioCtx?.close(); } catch { /* ignore */ }
@@ -612,6 +633,14 @@ export default function StreamPage() {
   const [uploadVoiceName, setUploadVoiceName] = useState("");
   const [vcAnalyser, setVcAnalyser]       = useState<AnalyserNode | null>(null);
   const [micAnalyser, setMicAnalyser]     = useState<AnalyserNode | null>(null);
+
+  // ── Local monitor: hear your own cloned voice ─────────────────────────────
+  const [voiceMonitor, setVoiceMonitor] = useState<boolean>(() => {
+    try { return localStorage.getItem("ss_voice_monitor") !== "0"; } catch { return true; }
+  });
+  const toggleVoiceMonitor = useCallback(() => {
+    setVoiceMonitor(v => { const next = !v; try { localStorage.setItem("ss_voice_monitor", next ? "1" : "0"); } catch { /**/ } return next; });
+  }, []);
 
   // ── UI ────────────────────────────────────────────────────────────────────
   const [isFullscreen, setIsFullscreen]       = useState(false);
@@ -983,7 +1012,10 @@ export default function StreamPage() {
     const next = !audioRouteOn;
     setAudioRouteOn(next);
     await applyAudioRoute(next);
-  }, [audioRouteOn, applyAudioRoute]);
+    if (next && voiceMonitor && clonerRef.current) {
+      toast({ title: "Local monitor is on", description: "Your cloned voice also plays in your speakers. Use headphones — loudspeakers let your mic feed it back into the call." });
+    }
+  }, [audioRouteOn, applyAudioRoute, voiceMonitor, toast]);
 
   // Re-apply routing when the AI output (re)connects, since srcObject changes,
   // and when the cloned voice stream starts (its audio element mounts then).
@@ -997,6 +1029,12 @@ export default function StreamPage() {
     const v = remoteVideoRef.current;
     if (v) v.muted = vcActive;
   }, [vcActive, connStatus]);
+
+  // With routing OFF the clone already reaches your speakers through the audio
+  // element; monitor mode only adds local playback when the clone is on the cable.
+  useEffect(() => {
+    clonerRef.current?.setMonitor(voiceMonitor && audioRouteOn);
+  }, [voiceMonitor, audioRouteOn, vcActive]);
 
   // ─── Mic-only preview for audio-only tab ───────────────────────────────────
   const startMicPreview = useCallback(async () => {
@@ -1603,6 +1641,25 @@ export default function StreamPage() {
         <button onClick={toggleNoiseCancel} aria-pressed={noiseCancel} title="Toggle noise cancellation"
           style={{ flexShrink: 0, width: 46, height: 24, borderRadius: 14, border: "none", cursor: "pointer", background: noiseCancel ? C : "hsl(222 30% 20%)", position: "relative", transition: "background 0.15s" }}>
           <span style={{ position: "absolute", top: 3, left: noiseCancel ? 25 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
+        </button>
+      </div>
+
+      {/* Local monitor for the cloned voice */}
+      <div style={{ background: "hsl(222 44% 6%)", border: `1px solid ${voiceMonitor ? "hsl(265 90% 65% / 0.35)" : "hsl(222 40% 11%)"}`, borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: voiceMonitor ? "hsl(265 90% 65% / 0.15)" : "hsl(222 40% 10%)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Headphones style={{ width: 15, height: 15, color: voiceMonitor ? VC : "hsl(222 25% 45%)" }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontSize: 11, fontWeight: 700, color: "hsl(190 80% 96%)", fontFamily: "'Orbitron',monospace", letterSpacing: "0.06em", marginBottom: 3 }}>Hear my cloned voice</p>
+          <p style={{ fontSize: 11, color: "hsl(222 25% 50%)", fontFamily: "'Rajdhani',sans-serif", lineHeight: 1.4 }}>
+            {voiceMonitor
+              ? "On — the clone also plays in your own speakers. Wear headphones; loudspeakers let your mic feed it back into the call."
+              : "Off — the clone goes to the calling app only. You hear yourself as usual."}
+          </p>
+        </div>
+        <button onClick={toggleVoiceMonitor} aria-pressed={voiceMonitor} title="Toggle local monitor"
+          style={{ flexShrink: 0, width: 46, height: 24, borderRadius: 14, border: "none", cursor: "pointer", background: voiceMonitor ? VC : "hsl(222 30% 20%)", position: "relative", transition: "background 0.15s" }}>
+          <span style={{ position: "absolute", top: 3, left: voiceMonitor ? 25 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left 0.15s" }} />
         </button>
       </div>
     </>
