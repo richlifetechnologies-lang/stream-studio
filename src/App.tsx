@@ -177,12 +177,7 @@ export function RetirementGate() {
           marginTop: 34, paddingTop: 18, borderTop: "1px solid hsl(222 40% 14%)",
           color: "hsl(222 25% 42%)", fontFamily: "'Rajdhani', sans-serif", fontSize: 13,
         }}>
-          <div style={{ marginBottom: 6 }}>
-            This screen appears every time Stream Studio is opened, until STREAM LIVE is installed.
-          </div>
-          <div style={{ fontFamily: "monospace", fontSize: 12, color: "hsl(222 25% 35%)" }}>
-            github.com/richlifetechnologies-lang/stream-live/releases/latest
-          </div>
+          This screen appears every time Stream Studio is opened, until STREAM LIVE is installed.
         </div>
       </div>
     </div>
