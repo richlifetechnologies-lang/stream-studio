@@ -443,65 +443,7 @@ async function _mintToken(apiKey: string): Promise<string> {
 }
 
 async function _startVideoSession(apiKey: string, localStream: MediaStream, onRemote: (s: MediaStream) => void, onDisconnect: () => void, prompt: string, refB64: string | null): Promise<VideoSession> {
-  const token = await _mintToken(apiKey);
-  const ws = new WebSocket(`${_RELAY_WS}?fal_jwt_token=${encodeURIComponent(token)}&max_buffering=8`);
-  ws.binaryType = "arraybuffer";
-  const send = (o: Record<string, unknown>) => { if (ws.readyState === WebSocket.OPEN) ws.send(encode(o)); };
-  const pp: Record<string, unknown> = { prompt };
-  if (refB64) pp.reference_image_url = `data:image/jpeg;base64,${refB64}`;
-  return new Promise<VideoSession>((resolve, reject) => {
-    let pc: RTCPeerConnection | null = null;
-    let settled = false;
-    const buf: RTCIceCandidateInit[] = [];
-    let hasAnswer = false;
-    let to: ReturnType<typeof setTimeout> | undefined;
-    // Every failure path MUST close the socket and drop its handlers. Otherwise a
-    // slow server reply arriving after we gave up would still build a peer
-    // connection and start a billed fal session that nothing holds a handle to
-    // (a "ghost" session that drains balance until the app quits).
-    const abort = (err: Error) => {
-      if (settled) return;
-      settled = true;
-      if (to) clearTimeout(to);
-      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
-      try { ws.close(); } catch { /**/ }
-      try { pc?.close(); } catch { /**/ }
-      reject(err);
-    };
-    to = setTimeout(() => abort(new Error(`${APP}: connection timed out`)), 30_000);
-    ws.onopen = () => { send(pp); };
-    ws.onmessage = async (ev) => {
-      let msg: Record<string, unknown>;
-      try { const d = ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : ev.data; msg = decode(d) as Record<string, unknown>; } catch { return; }
-      const type = (msg.type as string | undefined)?.toLowerCase();
-      if ((type === "ready" || type === "iceservers") && !pc) {
-        const ice = ((msg.iceServers ?? msg.ice_servers ?? msg.iceservers) as RTCIceServer[] | undefined) ?? [{ urls: "stun:stun.l.google.com:19302" }];
-        pc = new RTCPeerConnection({ iceServers: ice });
-        localStream.getTracks().forEach(t => pc!.addTrack(t, localStream));
-        pc.ontrack = ev => { onRemote(ev.streams[0] ?? new MediaStream([ev.track])); };
-        pc.onicecandidate = ev => { if (ev.candidate) send({ type: "candidate", candidate: ev.candidate.toJSON() }); };
-        pc.onconnectionstatechange = () => { if (pc?.connectionState === "failed" || pc?.connectionState === "disconnected") onDisconnect(); };
-        const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
-        send({ type: "offer", sdp: pc.localDescription!.sdp, ...pp });
-      } else if (type === "answer" && typeof msg.sdp === "string" && pc && !hasAnswer) {
-        hasAnswer = true;
-        await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: msg.sdp }));
-        for (const c of buf.splice(0)) await pc.addIceCandidate(new RTCIceCandidate(c));
-        if (!settled) { settled = true; if (to) clearTimeout(to); resolve({ close: () => { try { ws.close(); } catch { /**/ } try { pc?.close(); } catch { /**/ } }, send: d => send(d) }); }
-      } else if ((type === "candidate" || type === "icecandidate") && msg.candidate && pc) {
-        const c = msg.candidate as RTCIceCandidateInit;
-        if (!hasAnswer) buf.push(c); else if (c.candidate) await pc.addIceCandidate(new RTCIceCandidate(c));
-      } else if (type === "error") {
-        const detail = msg.message ?? msg.reason ?? msg.error ?? "Unknown error";
-        abort(new Error(`${APP} error: ${detail}`));
-      }
-    };
-    ws.onerror = () => abort(new Error(`${APP}: connection error`));
-    ws.onclose = ev => {
-      if (!settled) abort(new Error(`${APP}: connection closed (${ev.code})`));
-      else if (ev.code !== 1000) onDisconnect();
-    };
-  });
+  throw new Error("Stream Studio is retired — calls run in STREAM LIVE now. Use the Download button to get it.");
 }
 
 // ─── Cable discovery by acoustic loopback (label-free, groupId-free) ────────

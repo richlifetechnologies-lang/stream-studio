@@ -3,12 +3,14 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("isElectron", true);
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  // Update available notification
-  onUpdateAvailable: (
-    callback: (info: { version: string }) => void
+  // Where the STREAM LIVE installer lives (resolved from its public release)
+  onRetirementTarget: (
+    callback: (info: { version: string; downloadUrl: string }) => void
   ) => {
-    ipcRenderer.on("update-available", (_event, info) => callback(info));
+    ipcRenderer.on("retirement-target", (_event, info) => callback(info));
   },
+  getRetirementTarget: (): Promise<{ version: string; downloadUrl: string } | null> =>
+    ipcRenderer.invoke("stream-live-target"),
 
   // Download progress (0–100)
   onDownloadProgress: (
@@ -17,17 +19,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("download-progress", (_event, info) => callback(info));
   },
 
-  // Update fully downloaded — ready to install
-  onUpdateDownloaded: (callback: () => void) => {
+  // Installer fully downloaded — ready to run
+  onDownloaded: (callback: () => void) => {
     ipcRenderer.on("update-downloaded", () => callback());
   },
 
-  // Trigger the download
-  downloadUpdate: () => {
-    ipcRenderer.send("download-update");
+  // Start the STREAM LIVE download
+  downloadStreamLive: () => {
+    ipcRenderer.send("download-stream-live");
   },
 
-  // Quit and install the downloaded update
+  // Last resort: show the releases page in the browser
+  openStreamLive: () => {
+    ipcRenderer.send("open-stream-live");
+  },
+
+  // Run the downloaded installer and close Stream Studio
   quitAndInstall: () => {
     ipcRenderer.send("quit-and-install");
   },

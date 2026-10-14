@@ -13,15 +13,16 @@ let mainWindow: BrowserWindow | null = null;
 const GITHUB_OWNER = "richlifetechnologies-lang";
 const GITHUB_REPO  = "stream-studio";
 
-// ─── Asset pattern for the current platform + architecture ─────────────────
-function getAssetPattern(): RegExp {
-  if (process.platform === "win32") return /StreamStudio-Setup-.*\.exe$/i;
-  if (process.platform === "darwin") {
-    const arch = process.arch === "arm64" ? "arm64" : "x64";
-    return new RegExp(`StreamStudio-.*-${arch}\\.dmg`, "i");
-  }
-  return /StreamStudio-.*\.AppImage$/i;
-}
+// STREAM LIVE is the successor product and stays public, so the retirement
+// download still resolves after this repo is closed to new visitors.
+const LIVE_REPO       = "stream-live";
+const LIVE_RELEASES   = `https://github.com/${GITHUB_OWNER}/${LIVE_REPO}/releases/latest`;
+const LIVE_ASSET_NAME = (p: string): RegExp =>
+  p === "win32"
+    ? /StreamLive-Setup-.*\.exe$/i
+    : p === "darwin"
+      ? new RegExp(`StreamLive-.*-${process.arch === "arm64" ? "arm64" : "x64"}\\.dmg`, "i")
+      : /StreamLive-.*\.AppImage$/i;
 
 // ─── Generic HTTPS GET with redirect following ────────────────────────────────
 function httpsGet(url: string, headers: Record<string, string> = {}): Promise<Buffer> {
@@ -113,25 +114,14 @@ function downloadFile(
   });
 }
 
-// ─── Version comparison (semver-lite: major.minor.patch) ─────────────────────
-function isNewer(remote: string, local: string): boolean {
-  const parse = (v: string) => v.replace(/^v/, "").split(".").map(Number);
-  const [rMaj, rMin, rPat] = parse(remote);
-  const [lMaj, lMin, lPat] = parse(local);
-  if (rMaj !== lMaj) return rMaj > lMaj;
-  if (rMin !== lMin) return rMin > lMin;
-  return rPat > lPat;
-}
-
-// ─── In-app updater state ─────────────────────────────────────────────────────
+// ─── Retirement: locate the STREAM LIVE download ─────────────────────────────
 let pendingInstallerPath: string | null = null;
-let latestDownloadUrl:    string | null = null;
-let latestVersion:        string | null = null;
+let liveTarget: { version: string; downloadUrl: string } | null = null;
 
-async function checkForUpdate(win: BrowserWindow) {
+async function checkStreamLive(win: BrowserWindow) {
   try {
     const buf = await httpsGet(
-      `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
+      `https://api.github.com/repos/${GITHUB_OWNER}/${LIVE_REPO}/releases/latest`,
       { Accept: "application/vnd.github+json" }
     );
     const release = JSON.parse(buf.toString("utf8")) as {
@@ -139,26 +129,23 @@ async function checkForUpdate(win: BrowserWindow) {
       assets: Array<{ name: string; browser_download_url: string }>;
     };
 
-    const remoteVer = release.tag_name.replace(/^v/, "");
-    const localVer  = app.getVersion();
-
-    if (!isNewer(remoteVer, localVer)) return;
-
-    const pattern = getAssetPattern();
+    const pattern = LIVE_ASSET_NAME(process.platform);
     const asset   = release.assets.find((a) => pattern.test(a.name));
     if (!asset) return;
 
-    latestVersion     = remoteVer;
-    latestDownloadUrl = asset.browser_download_url;
+    liveTarget = {
+      version: release.tag_name.replace(/^v/, ""),
+      downloadUrl: asset.browser_download_url,
+    };
 
-    win.webContents.send("update-available", { version: remoteVer });
+    if (!win.isDestroyed()) win.webContents.send("retirement-target", liveTarget);
   } catch {
-    // Best-effort — silently ignore
+    // Best-effort — the gate still shows with the browser fallback link.
   }
 }
 
 async function startInAppDownload(win: BrowserWindow, overrideUrl?: string) {
-  const downloadUrl = overrideUrl ?? latestDownloadUrl;
+  const downloadUrl = overrideUrl ?? liveTarget?.downloadUrl;
   if (!downloadUrl) return;
 
   try {
@@ -183,51 +170,30 @@ async function startInAppDownload(win: BrowserWindow, overrideUrl?: string) {
   }
 }
 
-// ─── IPC: fal.ai token mint (keeps API key in Main Process) ──────────────────
-// The renderer asks for a short-lived JWT; we call fal's token endpoint here
-// where the API key never touches the renderer bundle.
-ipcMain.handle("get-fal-token", async (_event, apiKey: string, appId: string) => {
-  // Strip "Key " prefix if user accidentally stored it that way, then re-add it cleanly
-  const rawKey = apiKey.startsWith("Key ") ? apiKey.slice(4).trim() : apiKey.trim();
-  if (!rawKey) throw new Error("FAL_KEY is missing or empty");
-
-  // The token server validates scope against the alias only (e.g. "lucy-2-5" not "decart/lucy-2-5/realtime")
-  // appId is already the alias when called from our tokenProvider
-  const res = await fetch("https://rest.fal.ai/tokens/", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Key ${rawKey}`,
-    },
-    body: JSON.stringify({
-      allowed_apps: [appId],
-      token_expiration: 120,
-    }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`fal.ai token error (${res.status}): ${txt}`);
-  }
-  // The tokens endpoint returns either a plain string token or a JSON object
-  const raw = await res.text();
-  try {
-    const parsed = JSON.parse(raw);
-    // Could be { detail: "token..." } or just the token string wrapped in JSON
-    if (typeof parsed === "string") return parsed;
-    if (parsed && typeof parsed.detail === "string") return parsed.detail;
-    if (parsed && typeof parsed.token === "string") return parsed.token;
-    // If it's some other object, stringify is wrong — return raw text
-    return raw.replace(/^"|"$/g, ""); // strip quotes if it was a quoted string
-  } catch {
-    // Response was plain text token
-    return raw.trim();
-  }
+// ─── IPC: call servicing — retired ──────────────────────────────────────────
+// Stream Studio no longer services calls. The token mint was the only door to a
+// session, so closing it here stops every build of this app from connecting,
+// whatever key a machine has pasted.
+ipcMain.handle("get-fal-token", async () => {
+  throw new Error(
+    "Stream Studio has been retired and can no longer start calls. " +
+    "STREAM LIVE is the replacement — use the Download button to get it."
+  );
 });
 
-// ─── IPC: trigger update download ────────────────────────────────────────────
-ipcMain.on("download-update", () => {
+// ─── IPC: retirement download ────────────────────────────────────────────────
+// The gate's single action: pull the STREAM LIVE installer down in-app (same
+// resume/stall-retry path the old updater used) and hand it over on quit.
+ipcMain.on("download-stream-live", () => {
   if (mainWindow) startInAppDownload(mainWindow);
 });
+
+// Fallback when the download cannot run: open the public releases page.
+ipcMain.on("open-stream-live", () => {
+  shell.openExternal(LIVE_RELEASES).catch(() => {});
+});
+
+ipcMain.handle("stream-live-target", () => liveTarget);
 
 // ─── IPC: quit and run the downloaded installer ───────────────────────────────
 ipcMain.on("quit-and-install", () => {
@@ -239,25 +205,10 @@ ipcMain.on("quit-and-install", () => {
   });
 });
 
-// ─── IPC: open-external — intercept old v1.4.0 update flow ───────────────────
-// v1.4.0 compiled the following into its renderer: ipcRenderer.send("open-external", url)
-// That old call is now caught here: if the URL looks like one of our installers, we
-// download it in-app; otherwise we fall back to shell.openExternal as before.
+// ─── IPC: open-external — legacy renderer calls ──────────────────────────────
 ipcMain.on("open-external", (_event, url: string) => {
   if (typeof url !== "string") return;
-
-  const isOurInstaller =
-    url.includes(`github.com/${GITHUB_OWNER}/${GITHUB_REPO}`) &&
-    getAssetPattern().test(decodeURIComponent(url));
-
-  if (isOurInstaller && mainWindow) {
-    // Inform the renderer that an in-app update is starting
-    latestDownloadUrl = url;
-    mainWindow.webContents.send("update-available", { version: latestVersion ?? "latest" });
-    startInAppDownload(mainWindow, url);
-  } else {
-    shell.openExternal(url).catch(() => {});
-  }
+  shell.openExternal(url).catch(() => {});
 });
 
 // ─── Virtual camera frame feeder (UnityCapture shared-memory protocol) ────────
@@ -332,10 +283,10 @@ function createWindow() {
     }
   });
 
-  // Kick off update check 5 s after the window is ready
+  // Resolve the STREAM LIVE installer the gate offers for download
   mainWindow.webContents.once("did-finish-load", () => {
     if (!isDev && mainWindow) {
-      setTimeout(() => checkForUpdate(mainWindow!), 5000);
+      setTimeout(() => checkStreamLive(mainWindow!), 1500);
     }
   });
 }
